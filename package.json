@@ -8,7 +8,7 @@
     "dev": "tsx watch src/bot/index.ts",
     "build": "tsc",
     "start": "tsx src/bot/index.ts",
-    "test": "echo 'No tests configured yet (Phase 1)' && exit 0",
+    "test": "node --import tsx --test tests/*.test.ts",
     "deploy:functions": "supabase functions deploy",
     "db:migrate": "supabase db push"
   },

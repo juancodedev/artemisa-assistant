@@ -1,8 +1,8 @@
-// src/bot/claude.ts
+// supabase/functions/_shared/claude.ts
 // Claude API integration for Secretaria Virtual
 
 import { Anthropic } from '@anthropic-ai/sdk';
-import { Psicologo, TipoConsulta, RespuestaBot } from '../types';
+import { Psicologo, RespuestaBot, TipoConsulta } from './types.ts';
 
 const DEFAULT_MODEL = 'claude-3-5-haiku-20241022';
 const MAX_TOKENS = 400;
@@ -29,31 +29,60 @@ REGLAS ESTRICTAS:
 4. Nunca inventes información que no esté en la ficha. Si no sabés un dato, decí que no contás con esa información y que lo consulte directamente con el/la profesional.`;
 }
 
-let client: Anthropic | null = null;
+let clientInstance: Anthropic | null = null;
 
 function getAnthropicClient(): Anthropic | null {
-  const apiKey = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_API_KEY') : process.env.ANTHROPIC_API_KEY);
+  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) {
     return null;
   }
-  if (!client) {
-    client = new Anthropic({ apiKey });
+  if (!clientInstance) {
+    clientInstance = new Anthropic({ apiKey });
   }
-  return client;
+  return clientInstance;
 }
 
 /**
- * Generate a response to a patient's message using Claude.
+ * Quick local answers for straightforward administrative questions (0ms latency, 0 cost).
+ */
+export function quickAdminAnswer(message: string, psicologo: Psicologo): string | null {
+  const lower = message.toLowerCase().trim();
+
+  // Price inquiries
+  if (lower.includes('precio') || lower.includes('costo') || lower.includes('cuanto') || lower.includes('cuánto') || lower.includes('valor')) {
+    return `El valor de la consulta con ${psicologo.nombre} es ${psicologo.precio} (${psicologo.tipo_de_cita}).`;
+  }
+
+  // Address inquiries
+  if (lower.includes('direccion') || lower.includes('dirección') || lower.includes('donde') || lower.includes('dónde') || lower.includes('ubicacion') || lower.includes('ubicación') || lower.includes('queda')) {
+    return `${psicologo.nombre} atiende en: ${psicologo.direccion}.`;
+  }
+
+  // Modality inquiries
+  if (lower.includes('modalidad') || lower.includes('online') || lower.includes('presencial')) {
+    return `${psicologo.nombre} atiende en modalidad: ${psicologo.modalidad}.`;
+  }
+
+  // Health insurance / prepagas inquiries
+  if (lower.includes('obra social') || lower.includes('obras sociales') || lower.includes('prepaga') || lower.includes('prepagas') || lower.includes('sistema de salud')) {
+    return `${psicologo.nombre} trabaja con: ${psicologo.sistemas_de_salud.join(', ')}.`;
+  }
+
+  return null;
+}
+
+/**
+ * Generate an AI response using Claude Haiku.
  */
 export async function generateResponse(
   message: string,
   psicologo: Psicologo
 ): Promise<RespuestaBot> {
-  const claude = getAnthropicClient();
-  const model = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_MODEL') : process.env.ANTHROPIC_MODEL) || DEFAULT_MODEL;
+  const anthropic = getAnthropicClient();
+  const model = Deno.env.get('ANTHROPIC_MODEL') || DEFAULT_MODEL;
 
-  if (!claude) {
-    console.warn('ANTHROPIC_API_KEY not configured. Falling back to default message.');
+  if (!anthropic) {
+    console.warn('ANTHROPIC_API_KEY is not set. Returning fallback administrative answer.');
     return {
       tipo: 'administrativa',
       contenido: `Gracias por tu mensaje. ${psicologo.nombre} revisará tu consulta a la brevedad. Podés consultar por horarios, honorarios, ubicación o agendar tu cita.`
@@ -61,7 +90,7 @@ export async function generateResponse(
   }
 
   try {
-    const response = await claude.messages.create({
+    const response = await anthropic.messages.create({
       model,
       max_tokens: MAX_TOKENS,
       temperature: TEMPERATURE,
@@ -70,12 +99,12 @@ export async function generateResponse(
     });
 
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    const lowerText = text.toLowerCase();
-    let tipo: TipoConsulta = 'administrativa';
+    const lower = text.toLowerCase();
 
-    if (lowerText.includes('cal.com') || lowerText.includes('link') || lowerText.includes('agendar') || lowerText.includes('turno')) {
+    let tipo: TipoConsulta = 'administrativa';
+    if (lower.includes('cal.com') || lower.includes('link') || lower.includes('agendar') || lower.includes('turno')) {
       tipo = 'programacion';
-    } else if (lowerText.includes('atención directa') || lowerText.includes('contactará a la brevedad')) {
+    } else if (lower.includes('atención directa') || lower.includes('contactará a la brevedad')) {
       tipo = 'clinica';
     }
 
@@ -85,35 +114,10 @@ export async function generateResponse(
       link_calcom: tipo === 'programacion' ? psicologo.link_calcom : undefined
     };
   } catch (error) {
-    console.error('Claude API error:', error);
+    console.error('Anthropic Claude API error:', error);
     return {
       tipo: 'administrativa',
-      contenido: `Gracias por tu consulta. En este momento estamos experimentando una demora; ${psicologo.nombre} te contactará a la brevedad.`
+      contenido: `Gracias por comunicarte. En este momento el sistema está procesando tu consulta; ${psicologo.nombre} te responderá a la brevedad.`
     };
   }
-}
-
-/**
- * Quick local answers for straightforward administrative questions (0ms latency, 0 cost).
- */
-export function quickAdminAnswer(message: string, psicologo: Psicologo): string | null {
-  const lowerMsg = message.toLowerCase().trim();
-
-  if (lowerMsg.includes('precio') || lowerMsg.includes('costo') || lowerMsg.includes('cuanto') || lowerMsg.includes('cuánto') || lowerMsg.includes('valor')) {
-    return `El valor de la consulta con ${psicologo.nombre} es ${psicologo.precio} (${psicologo.tipo_de_cita}).`;
-  }
-
-  if (lowerMsg.includes('direccion') || lowerMsg.includes('dirección') || lowerMsg.includes('donde') || lowerMsg.includes('dónde') || lowerMsg.includes('ubicacion') || lowerMsg.includes('ubicación')) {
-    return `${psicologo.nombre} atiende en: ${psicologo.direccion}.`;
-  }
-
-  if (lowerMsg.includes('modalidad') || lowerMsg.includes('online') || lowerMsg.includes('presencial')) {
-    return `${psicologo.nombre} ofrece atención en modalidad: ${psicologo.modalidad}.`;
-  }
-
-  if (lowerMsg.includes('obra social') || lowerMsg.includes('obras sociales') || lowerMsg.includes('prepaga') || lowerMsg.includes('prepagas') || lowerMsg.includes('sistema de salud')) {
-    return `${psicologo.nombre} acepta los siguientes sistemas de salud: ${psicologo.sistemas_de_salud.join(', ')}.`;
-  }
-
-  return null;
 }

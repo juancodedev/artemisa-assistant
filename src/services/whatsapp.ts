@@ -1,35 +1,47 @@
 // src/services/whatsapp.ts
-// WhatsApp Business API client
-// Handles sending messages to patients via Meta's Cloud API
+// WhatsApp Business Cloud API client
 
-const META_APP_ID = Deno.env.get('META_APP_ID') || '';
-const PHONE_NUMBER_ID = Deno.env.get('META_PHONE_NUMBER_ID') || '';
-const ACCESS_TOKEN = Deno.env.get('META_ACCESS_TOKEN') || '';
 const GRAPH_API_VERSION = 'v18.0';
 
+function getEnv(key: string): string {
+  if (typeof Deno !== 'undefined' && Deno.env) {
+    return Deno.env.get(key) || '';
+  }
+  return process.env[key] || '';
+}
+
 /**
- * Send a text message to a WhatsApp user.
- * Returns the message ID on success.
+ * Send a text message to a WhatsApp user via Meta Cloud API.
  */
-export async function sendMessage(to: string, text: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  if (!META_APP_ID || !PHONE_NUMBER_ID || !ACCESS_TOKEN) {
-    return { success: false, error: 'WhatsApp credentials not configured' };
+export async function sendMessage(
+  to: string,
+  text: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const phoneNumberId = getEnv('META_PHONE_NUMBER_ID');
+  const accessToken = getEnv('META_ACCESS_TOKEN');
+
+  if (!phoneNumberId || !accessToken) {
+    return { success: false, error: 'WhatsApp credentials not configured (missing META_PHONE_NUMBER_ID or META_ACCESS_TOKEN)' };
   }
 
+  // Meta expects recipient phone number with digits only (no leading + or spaces)
+  const cleanRecipient = to.replace(/[^\d]/g, '');
+
   try {
-    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${META_APP_ID}/messages`;
-    
+    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        to: to,
+        recipient_type: 'individual',
+        to: cleanRecipient,
         type: 'text',
-        text: { body: text }
+        text: { preview_url: false, body: text }
       })
     });
 
@@ -48,27 +60,21 @@ export async function sendMessage(to: string, text: string): Promise<{ success: 
 
 /**
  * Receive and parse incoming WhatsApp messages from Meta webhook.
- * Validates the webhook signature and extracts message data.
  */
-export function parseWebhookPayload(body: any): { from: string; text: string; type: string } | null {
-  // Handle verification request
-  if (body.object === 'whatsapp_business_account') {
+export function parseWebhookPayload(body: any): { from: string; text: string; type: string; id: string } | null {
+  if (body?.object === 'whatsapp_business_account') {
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
+    const value = change?.value;
 
-    // Webhook verification (GET)
-    if (change?.value?.messages) {
-      const message = change.value.messages[0];
+    if (value?.messages && value.messages.length > 0) {
+      const message = value.messages[0];
       return {
         from: message.from,
-        text: message.message?.text?.body?.trim() || '',
-        type: message.type
+        text: message.text?.body?.trim() || '',
+        type: message.type || 'text',
+        id: message.id
       };
-    }
-
-    // Webhook verification challenge
-    if (change?.value?.['hub.mode'] === 'subscribe') {
-      return null; // Handled by verification endpoint
     }
   }
 
@@ -76,11 +82,18 @@ export function parseWebhookPayload(body: any): { from: string; text: string; ty
 }
 
 /**
- * Validate that a webhook request is from Meta.
- * In production, this should verify the X-Hub-Signature header.
+ * Handle GET webhook verification challenge from Meta.
  */
-export function validateWebhookSignature(body: string, signature: string | null): boolean {
-  if (!signature) return true; // For development, skip signature check
-  // TODO: Implement proper HMAC verification
-  return true;
+export function verifyWebhookChallenge(
+  mode: string | null,
+  token: string | null,
+  challenge: string | null
+): { isValid: boolean; challenge?: string } {
+  const verifyToken = getEnv('META_WEBHOOK_VERIFY_TOKEN') || 'artemisa-verify-token';
+
+  if (mode === 'subscribe' && token === verifyToken && challenge) {
+    return { isValid: true, challenge };
+  }
+
+  return { isValid: false };
 }

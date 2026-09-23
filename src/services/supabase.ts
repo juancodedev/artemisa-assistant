@@ -1,120 +1,104 @@
 // src/services/supabase.ts
 // Supabase data access layer
-// Provides clean functions for database operations
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+import { createClient } from '@supabase/supabase-js';
 
-/**
- * Supabase REST API client using fetch.
- * Uses service_role key for admin operations (bypasses RLS).
- */
+function getEnv(key: string): string {
+  if (typeof Deno !== 'undefined' && Deno.env) {
+    return Deno.env.get(key) || '';
+  }
+  return process.env[key] || '';
+}
+
+const SUPABASE_URL = getEnv('SUPABASE_URL');
+const SERVICE_ROLE_KEY = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+
+export const supabaseJs = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false
+  }
+});
+
 export const supabase = {
   async getPsicologos(): Promise<any[]> {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/psicologos`, {
-      headers: {
-        'apikey': SERVICE_ROLE_KEY,
-        'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json',
-      }
-    });
-    if (!response.ok) throw new Error(`Failed to fetch psicologos: ${response.status}`);
-    return response.json();
+    const { data, error } = await supabaseJs.from('psicologos').select('*');
+    if (error) throw error;
+    return data || [];
   },
 
   async getPsicologoByWhatsApp(number: string): Promise<any | null> {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/psicologos?numero_whatsapp=eq.${encodeURIComponent(number)}`,
-      {
-        headers: {
-          'apikey': SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-        }
-      }
-    );
-    if (!response.ok) throw new Error(`Failed to fetch psicologo: ${response.status}`);
-    const data = await response.json();
-    return data.length > 0 ? data[0] : null;
+    const cleanNumber = number.replace(/[^\d+]/g, '');
+    const { data, error } = await supabaseJs
+      .from('psicologos')
+      .select('*')
+      .or(`numero_whatsapp.eq.${cleanNumber},numero_whatsapp.eq.+${cleanNumber.replace(/^\+/, '')}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data || null;
   },
 
   async getConversaciones(psicologoId: string): Promise<any[]> {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/conversaciones?psicologo_id=eq.${psicologoId}`,
-      {
-        headers: {
-          'apikey': SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-        }
-      }
-    );
-    if (!response.ok) throw new Error(`Failed to fetch conversaciones: ${response.status}`);
-    return response.json();
+    const { data, error } = await supabaseJs
+      .from('conversaciones')
+      .select('*')
+      .eq('psicologo_id', psicologoId);
+
+    if (error) throw error;
+    return data || [];
   },
 
   async createConversacion(psicologoId: string, pacienteNumber: string): Promise<any> {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/conversaciones`, {
-      method: 'POST',
-      headers: {
-        'apikey': SERVICE_ROLE_KEY,
-        'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    const { data, error } = await supabaseJs
+      .from('conversaciones')
+      .insert({
         psicologo_id: psicologoId,
         numero_paciente: pacienteNumber,
         historial: [],
         ultima_actividad: new Date().toISOString()
       })
-    });
-    if (!response.ok) throw new Error(`Failed to create conversacion: ${response.status}`);
-    return response.json();
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   },
 
   async updateConversacion(conversacionId: string, historial: any[]): Promise<any> {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/conversaciones?id=eq.${conversacionId}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'apikey': SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          historial,
-          ultima_actividad: new Date().toISOString()
-        })
-      }
-    );
-    if (!response.ok) throw new Error(`Failed to update conversacion: ${response.status}`);
-    return response.json();
+    const { data, error } = await supabaseJs
+      .from('conversaciones')
+      .update({
+        historial,
+        ultima_actividad: new Date().toISOString()
+      })
+      .eq('id', conversacionId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   },
 
-  async appendToHistorial(conversacionId: string, message: { role: string; content: string; timestamp: string }): Promise<any> {
+  async appendToHistorial(
+    conversacionId: string,
+    message: { role: string; content: string; timestamp: string }
+  ): Promise<any> {
     const conversacion = await this.getConversacionById(conversacionId);
-    if (!conversacion) {
-      // Create new conversation if it doesn't exist
-      return null;
-    }
-    const updatedHistorial = [...conversacion.historial, message];
+    if (!conversacion) return null;
+    const updatedHistorial = [...(conversacion.historial || []), message];
     return this.updateConversacion(conversacionId, updatedHistorial);
   },
 
   async getConversacionById(conversacionId: string): Promise<any | null> {
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/conversaciones?id=eq.${conversacionId}`,
-      {
-        headers: {
-          'apikey': SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-        }
-      }
-    );
-    if (!response.ok) throw new Error(`Failed to fetch conversacion: ${response.status}`);
-    const data = await response.json();
-    return data.length > 0 ? data[0] : null;
+    const { data, error } = await supabaseJs
+      .from('conversaciones')
+      .select('*')
+      .eq('id', conversacionId)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data || null;
   }
 };

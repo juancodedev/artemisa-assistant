@@ -1,49 +1,41 @@
-// Supabase Edge Function - Send Message
-// Utility function to send WhatsApp messages programmatically
-// Can be called by other functions or via internal triggers
+// supabase/functions/send-message/index.ts
+// Supabase Edge Function - Outbound WhatsApp Message Dispatcher
 
-export async function handler(req: Request) {
+import { sendMessage } from '../_shared/whatsapp.ts';
+
+Deno.serve(async (req: Request) => {
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
   try {
     const { to, message } = await req.json();
 
     if (!to || !message) {
-      return new Response('Missing required fields: to, message', { status: 400 });
+      return new Response(
+        JSON.stringify({ error: 'Missing required fields: to, message' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
-    const metaAppId = Deno.env.get('META_APP_ID');
-    const phoneNumberId = Deno.env.get('META_PHONE_NUMBER_ID');
-    const accessToken = Deno.env.get('META_ACCESS_TOKEN');
+    const result = await sendMessage(to, message);
 
-    if (!metaAppId || !phoneNumberId || !accessToken) {
-      return new Response('WhatsApp credentials not configured', { status: 500 });
+    if (!result.success) {
+      return new Response(
+        JSON.stringify({ success: false, error: result.error }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
-    const url = `https://graph.facebook.com/v18.0/${metaAppId}/messages`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: to,
-        type: 'text',
-        text: { body: message }
-      })
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      return new Response(`WhatsApp API error: ${errorBody}`, { status: response.status });
-    }
-
-    const result = await response.json();
-    return new Response(JSON.stringify({ success: true, result }), { status: 200 });
-
+    return new Response(
+      JSON.stringify({ success: true, messageId: result.messageId }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (error) {
-    console.error('Send message error:', error);
-    return new Response('Internal Server Error', { status: 500 });
+    console.error('Error in send-message edge function:', error);
+    return new Response(
+      JSON.stringify({ error: 'Internal Server Error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
   }
-}
+});

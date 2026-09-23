@@ -2,13 +2,12 @@
 // Message routing logic: determines what type of question is being asked
 // and delegates to the appropriate handler
 
-import { Psicologo, RespuestaBot, TipoConsulta } from '../types';
-import { isClinicalQuestion, isSchedulingRequest, isAdminQuestion, sanitizeInput } from '../utils/validation';
+import { Psicologo, RespuestaBot } from '../types';
+import { isClinicalQuestion, isSchedulingRequest, sanitizeInput } from '../utils/validation';
 import { generateResponse, quickAdminAnswer } from './claude';
 
 /**
  * Process an incoming message from a patient and return the appropriate response.
- * This is the main routing function.
  */
 export async function routeMessage(
   message: string,
@@ -17,16 +16,18 @@ export async function routeMessage(
   const cleanMessage = sanitizeInput(message);
 
   if (!cleanMessage) {
-    return { tipo: 'administrativa', contenido: 'No entendí tu mensaje. Escribe algo para comenzar.' };
+    return {
+      tipo: 'administrativa',
+      contenido: `¡Hola! Soy la Secretaria Virtual de ${psicologo.nombre}. ¿En qué puedo ayudarte hoy? Podés consultarme por precios, horarios, ubicación o cómo agendar tu cita.`,
+    };
   }
 
-  // Rule 1: Check if it's a scheduling request FIRST (before admin/clinical)
-  // Because scheduling has a specific behavior (only responds with Cal.com link)
+  // Rule 1: Check if it's an explicit scheduling request FIRST
   if (isSchedulingRequest(cleanMessage)) {
     return {
       tipo: 'programacion',
-      contenido: `Para agendar tu cita con ${psicologo.nombre}, usá este link: ${psicologo.link_calcom}`,
-      link_calcom: psicologo.link_calcom
+      contenido: `Para agendar tu cita con ${psicologo.nombre}, podés elegir el día y horario que mejor te quede acá: ${psicologo.link_calcom}`,
+      link_calcom: psicologo.link_calcom,
     };
   }
 
@@ -35,11 +36,11 @@ export async function routeMessage(
   if (isClinicalQuestion(cleanMessage)) {
     return {
       tipo: 'clinica',
-      contenido: `Esta consulta requiere atención directa con tu psicólogo. Te contactaremos a la brevedad. 🤝`
+      contenido: `Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad. 🤝`,
     };
   }
 
-  // Rule 3: Try quick admin answers first (faster, no API call)
+  // Rule 3: Try quick admin answers first (0ms, no API cost)
   const quickAnswer = quickAdminAnswer(cleanMessage, psicologo);
   if (quickAnswer) {
     return { tipo: 'administrativa', contenido: quickAnswer };
@@ -51,7 +52,6 @@ export async function routeMessage(
 
 /**
  * Check if a message should trigger a scheduling link response.
- * This is used to decide if we should respond with Cal.com link.
  */
 export function needsCalComLink(message: string): boolean {
   return isSchedulingRequest(message);

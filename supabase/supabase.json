@@ -16,10 +16,6 @@
     "send-message": {
       "verify_jwt": false,
       "import_map": true
-    },
-    "supabase-client": {
-      "verify_jwt": false,
-      "import_map": true
     }
   }
 }

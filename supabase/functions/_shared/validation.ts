@@ -1,10 +1,10 @@
-// src/utils/validation.ts
-// Input validation and sanitization
+// supabase/functions/_shared/validation.ts
+// Input validation and sanitization for patient messages
 
-import { Psicologo } from '../types';
+import { Psicologo } from './types.ts';
 
 /**
- * Sanitize a user message to prevent injection attacks and trim length.
+ * Sanitize user input to strip control characters and limit length.
  */
 export function sanitizeInput(input: string): string {
   if (typeof input !== 'string') return '';
@@ -17,12 +17,12 @@ export function sanitizeInput(input: string): string {
 }
 
 /**
- * Validate that a WhatsApp number format looks reasonable.
- * Accepts numbers with or without leading +.
+ * Validate WhatsApp phone number (accepts with or without leading +).
  */
 export function isValidWhatsAppNumber(number: string): boolean {
   if (!number || typeof number !== 'string') return false;
   const clean = number.trim();
+  // Accepts +[country][number] or pure digits (e.g. 5491123456789)
   const regex = /^(\+)?[1-9]\d{6,14}$/;
   return regex.test(clean);
 }
@@ -36,8 +36,8 @@ export function normalizePhoneNumber(number: string): string {
 }
 
 /**
- * Check if a message contains clinical/medical content, emotional crisis, or personal psychological issues.
- * Returns true if the message should NEVER be handled by AI and must be forwarded.
+ * Check if a message contains clinical/medical symptoms, crises or psychological issues.
+ * Never answers clinical questions directly - always delegates to the professional.
  */
 export function isClinicalQuestion(message: string): boolean {
   const clinicalKeywords = [
@@ -54,7 +54,7 @@ export function isClinicalQuestion(message: string): boolean {
 }
 
 /**
- * Check if a message is explicitly asking to schedule/book an appointment.
+ * Check if a message explicitly requests booking or scheduling an appointment.
  */
 export function isSchedulingRequest(message: string): boolean {
   const schedulingKeywords = [
@@ -67,7 +67,7 @@ export function isSchedulingRequest(message: string): boolean {
 }
 
 /**
- * Check if a message is asking about administrative info.
+ * Check if a message is an administrative inquiry.
  */
 export function isAdminQuestion(message: string): boolean {
   const adminKeywords = [
@@ -81,7 +81,7 @@ export function isAdminQuestion(message: string): boolean {
 }
 
 /**
- * Validate that a Psicologo object has all required fields.
+ * Validate that a Psicologo object contains required profile information.
  */
 export function validatePsicologo(psicologo: Partial<Psicologo>): boolean {
   const required: (keyof Psicologo)[] = [

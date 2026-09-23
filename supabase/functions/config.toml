@@ -8,6 +8,3 @@ import_map = "import_map.json"
 verify_jwt = false
 import_map = "import_map.json"
 
-[functions.supabase-client]
-verify_jwt = false
-import_map = "import_map.json"

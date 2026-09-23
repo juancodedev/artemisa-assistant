@@ -3,47 +3,51 @@
 // Orchestrates message flow: receive → validate → route → respond → store
 
 import { routeMessage } from './router';
-import { sanitizeInput, isValidWhatsAppNumber } from '../utils/validation';
-import { Psicologo } from '../types';
+import { sanitizeInput, isValidWhatsAppNumber, normalizePhoneNumber } from '../utils/validation';
+import { Psicologo, RespuestaBot } from '../types';
+import { supabase } from '../services/supabase';
 
 /**
  * Main handler for an incoming WhatsApp message.
- * This function is called by the webhook Edge Function.
  */
 export async function handleIncomingMessage(
   patientNumber: string,
   messageText: string,
   psicologo: Psicologo
 ): Promise<{ response: string; needsCalCom?: boolean; link_calcom?: string }> {
-  // Validate the patient's WhatsApp number
-  if (!isValidWhatsAppNumber(patientNumber)) {
+  const normalized = normalizePhoneNumber(patientNumber);
+
+  if (!isValidWhatsAppNumber(normalized)) {
     return {
-      response: 'Número de WhatsApp no válido. Contactá a tu psicólogo directamente.'
+      response: 'Número de WhatsApp no válido. Contactá a tu psicólogo directamente.',
     };
   }
 
-  // Route the message to the appropriate handler
-  const result = await routeMessage(messageText, psicologo);
+  const result: RespuestaBot = await routeMessage(messageText, psicologo);
 
-  const response = {
+  return {
     response: result.contenido,
     needsCalCom: result.tipo === 'programacion',
-    link_calcom: result.link_calcom
+    link_calcom: result.link_calcom,
   };
-
-  return response;
 }
 
 /**
- * Initialize the bot with a psychologist's data.
- * Called at startup or when a new patient conversation starts.
+ * Initialize the bot with a psychologist's data from Supabase.
  */
-export async function initializeBot(psicologoId: string): Promise<Psicologo | null> {
-  // This would fetch from Supabase in a real implementation
-  // For now, it's a placeholder for the Supabase client call
-  console.log(`Initializing bot for psicologo_id: ${psicologoId}`);
-  return null; // Will be replaced by actual Supabase call
+export async function initializeBot(psicologoId?: string): Promise<Psicologo | null> {
+  try {
+    if (psicologoId) {
+      const psicologos = await supabase.getPsicologos();
+      return psicologos.find((p: any) => p.id === psicologoId) || null;
+    }
+    const psicologos = await supabase.getPsicologos();
+    return psicologos.length > 0 ? (psicologos[0] as Psicologo) : null;
+  } catch (error) {
+    console.error('Error in initializeBot:', error);
+    return null;
+  }
 }
 
 export { Psicologo } from '../types';
-export { isValidWhatsAppNumber } from '../utils/validation';
+export { isValidWhatsAppNumber, normalizePhoneNumber } from '../utils/validation';
