@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.21.0",
+    "@anthropic-ai/sdk": "https://esm.sh/@anthropic-ai/sdk@0.18.0"
+  },
+  "tasks": {
+    "start": "deno run --allow-all --unstable-node-globals-safety ./src/bot/index.ts"
+  }
+}

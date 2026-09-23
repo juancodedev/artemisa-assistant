@@ -1,0 +1,25 @@
+{
+  "projects": {
+    "default": {
+      "ref": "ihxlziemvtukpixnptob",
+      "name": "artemisa-assistant",
+      "organizationId": "vldpkfjvdnrnreoecpqw",
+      "apiUrl": "https://ihxlziemvtukpixnptob.supabase.co",
+      "region": "us-east-1"
+    }
+  },
+  "functions": {
+    "webhook": {
+      "verify_jwt": false,
+      "import_map": true
+    },
+    "send-message": {
+      "verify_jwt": false,
+      "import_map": true
+    },
+    "supabase-client": {
+      "verify_jwt": false,
+      "import_map": true
+    }
+  }
+}

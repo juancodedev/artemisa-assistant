@@ -1,0 +1,32 @@
+schema: spec-driven
+
+context: |
+  Tech stack: WhatsApp Business API (Cloud API de Meta) + Claude API (Haiku 4.5) + Supabase
+  Architecture: Conversational WhatsApp AI bot (secretary virtual) for psychologist
+  Purpose: Answers administrative patient questions, provides Cal.com scheduling links; clinical questions forwarded to psychologist
+  Testing: No test runner detected — strict_tdd: false
+  Phase 1 scope: Conversational bot on real WhatsApp with one test psychologist's data in database
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
