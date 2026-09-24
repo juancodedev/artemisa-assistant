@@ -1,38 +1,124 @@
-Vas a ayudarme a construir la Fase 1 del V1 de un proyecto. Aquí está todo el contexto necesario:
+# Runbook de inicio — Fase 1
 
-## Qué es el proyecto
-Un bot de WhatsApp con IA que actúa como "secretaria virtual" de un psicólogo independiente. Responde preguntas administrativas de pacientes (horarios, modalidad de atención, precio, dirección, sistemas de salud) usando datos configurados previamente, y entrega un link de Cal.com cuando el paciente quiere agendar. El bot nunca responde preguntas clínicas o personales — esas las deriva al psicólogo.
+## Estado operativo
 
-## Stack a usar
-- **Canal:** WhatsApp Business API (Cloud API de Meta)
-- **Motor de IA:** Claude API, modelo Haiku 4.5
-- **Base de datos + Backend:** Supabase (Postgres + Edge Functions)
-- **Hosting del dashboard (no es parte de esta fase):** Cloudflare Pages
+La Fase 1 usa Supabase Edge Functions con Deno como runtime productivo. `src/` es únicamente el árbol Node/local de compatibilidad. El bot procesa únicamente texto de WhatsApp para un perfil demo.
 
-## Alcance de ESTA fase (Fase 1 del roadmap)
-Solo construir el bot conversacional funcionando en WhatsApp real, con los datos de UN psicólogo de prueba cargados directamente en la base de datos (sin login ni dashboard todavía — eso es la Fase 2).
+## Requisitos
 
-No construyas en esta fase: login, dashboard, formulario de configuración, confirmación de pago, ni integración con Instagram. Eso se agrega después.
+- Node.js 22, según el CI actual.
+- Deno 2.1.x, la línea usada por CI; la ejecución Docker verificada usó 2.1.4.
+- Supabase CLI vinculado al proyecto objetivo.
+- Dependencias instaladas desde el lockfile con `npm ci`.
 
-## Modelo de datos para esta fase
+No se incluyen valores de secretos en este documento.
 
-Tabla `psicologos`:
-- id, nombre, numero_whatsapp, modalidad, direccion, precio, tipo_de_cita, sistemas_de_salud, link_calcom
+## 1. Preparación local
 
-Tabla `conversaciones`:
-- id, psicologo_id, numero_paciente, historial, ultima_actividad
+```bash
+npm ci
+```
 
-## Lo que el bot debe hacer (criterios de aceptación)
-1. Recibe un mensaje de WhatsApp del paciente (el paciente siempre escribe primero).
-2. Busca en la base de datos los datos del psicólogo asociado a ese número de WhatsApp.
-3. Usa Claude API para redactar una respuesta natural a la pregunta del paciente, basada solo en esos datos.
-4. Si la pregunta es clínica o personal (no administrativa), no la responde — indica que eso se debe conversar directo con el psicólogo.
-5. Si el paciente dice explícitamente que quiere agendar/reservar, responde con el link de Cal.com del psicólogo (nunca lo ofrece de forma proactiva antes de que lo pidan).
-6. Guarda el historial de la conversación para mantener contexto entre mensajes.
+Variables para las pruebas y el árbol local se gestionan fuera de la documentación. No copie valores reales a archivos versionados.
 
-## Seguridad mínima a respetar desde ya
-- Las claves de WhatsApp, Claude y Supabase deben vivir en variables de entorno del backend, nunca en código expuesto.
-- Toda validación de datos entrantes se hace en el servidor, no se confía en el cliente.
+## 2. Base de datos
 
-## Cómo quiero que trabajes
-Empieza proponiéndome la estructura de carpetas y archivos del proyecto antes de escribir código. Ve paso a paso, y antes de avanzar a la siguiente pieza (por ejemplo, de "recibir el mensaje" a "conectar con Claude"), confírmame que la anterior quedó funcionando.
+El seed activo se define en `supabase/config.toml`:
+
+```text
+supabase/seed/001_test_psicologo.sql
+```
+
+Para recrear la base local aplicando migraciones y el seed activo:
+
+```bash
+supabase db reset
+```
+
+Para aplicar las migraciones pendientes en el proyecto Supabase vinculado:
+
+```bash
+npm run db:migrate
+```
+
+Orden efectivo de esquema:
+
+1. `001_create_psicologos.sql`
+2. `002_create_conversaciones.sql`
+3. `003_seed_test_psicologo.sql` — dato histórico aplicado
+4. `004_phase1_p0_security_context.sql`
+
+`003_seed_test_psicologo.sql` no es el seed operativo. El perfil demo vigente está en `supabase/seed/001_test_psicologo.sql`.
+
+## 3. Variables de servidor
+
+Configurar como secretos de Supabase, sin guardar sus valores en el repositorio:
+
+| Secreto | Necesario | Uso |
+|---|---|---|
+| `SUPABASE_URL` | Sí | URL del proyecto |
+| `SUPABASE_SERVICE_ROLE_KEY` | Sí | Acceso server-side; bypassa RLS |
+| `META_APP_SECRET` | Sí | HMAC del webhook |
+| `META_WEBHOOK_VERIFY_TOKEN` | Sí | Challenge GET de Meta |
+| `META_PHONE_NUMBER_ID` | Sí | Número emisor de Meta |
+| `META_ACCESS_TOKEN` | Sí | Graph API de Meta |
+| `ANTHROPIC_API_KEY` | Sí para Claude | Fallback de IA |
+| `INTERNAL_FUNCTION_SECRET` | Sí | Autorización de `send-message` |
+| `META_GRAPH_API_VERSION` | Opcional | Sobrescribe `v25.0` con un valor válido |
+| `META_FETCH_TIMEOUT_MS` | Opcional | Timeout de Meta, acotado por el runtime |
+| `ANTHROPIC_MODEL` | Opcional | Sobrescribe el modelo por defecto |
+| `ANTHROPIC_WORKSPACE_ID` | Opcional | Workspace de Anthropic |
+
+Checklist antes de probar:
+
+- [ ] El proyecto Supabase está vinculado al entorno correcto.
+- [ ] Las migraciones 001–004 están aplicadas.
+- [ ] El seed demo activo está cargado o es posible cargarlo.
+- [ ] `SUPABASE_SERVICE_ROLE_KEY` no está expuesta al cliente.
+- [ ] Meta y Anthropic tienen secretos configurados en el servidor.
+- [ ] El endpoint webhook de Meta usa HTTPS.
+
+## 4. Verificación local
+
+```bash
+npm test
+npx tsc --noEmit
+deno check --config supabase/functions/deno.json --no-lock supabase/functions/_shared/phase1.test.ts
+npm run test:edge
+```
+
+Estos comandos validan el árbol Node y el runtime Deno. No realizan despliegue.
+
+## 5. Deploy controlado
+
+```bash
+npm run deploy:webhook
+npm run deploy:send-message
+```
+
+Las funciones se despliegan por separado después de revisar el estado de las migraciones y los secretos.
+
+La configuración de Supabase mantiene `verify_jwt = false` porque el webhook valida su propia autenticación con HMAC y `send-message` usa `INTERNAL_FUNCTION_SECRET`. Esta configuración no convierte al webhook en un endpoint público sin protección: la firma de Meta es obligatoria.
+
+## 6. Prueba de WhatsApp
+
+1. Confirmar que Meta apunta al endpoint de la función `webhook`.
+2. Completar el challenge GET con el token configurado.
+3. Enviar un texto desde un número de prueba al número de WhatsApp demo.
+4. Verificar la respuesta administrativa, la persistencia en `conversaciones` y el estado final en `mensajes_procesados`.
+5. Probar una solicitud explícita de agenda y verificar que entrega el link de Cal.com.
+6. Probar una consulta clínica y verificar que no se responde clínicamente.
+7. Probar una señal de crisis y verificar los dos recursos aprobados.
+
+## Comportamiento de crisis
+
+La ruta de crisis se ejecuta antes de agenda, clínica, administración local y Claude. No llama a Claude, no incluye Cal.com ni `133`, y no promete que se notificará al psicólogo. El texto original no se persiste: se guarda un marcador redactado. La respuesta exacta está en el código y las pruebas, no en esta runbook.
+
+## Límites conocidos
+
+- Se almacenan número e historial del paciente; no hay consentimiento, retención ni eliminación.
+- La detección de crisis es heurística.
+- No existe canal de notificación clínica.
+- El `service_role` bypassa RLS y debe permanecer en Edge Functions.
+- Solo se admite texto; audio, imagen y documento reciben una respuesta informativa.
+- `send-message` es interno y protegido; no debe usarse como API pública.

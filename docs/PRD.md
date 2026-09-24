@@ -1,74 +1,113 @@
-# PRD — Secretaria Virtual para Psicólogos
+# PRD — Secretaria virtual para psicólogos
 
-## 1. Resumen
-Los pacientes que buscan psicólogo hoy se topan con información ambigua o desactualizada: modalidad de atención, horarios reales y precio no están claros, y solo se consiguen escribiendo directo por WhatsApp/Instagram, con respuestas lentas o inconsistentes. El psicólogo independiente (sin secretaria) pierde tiempo respondiendo lo mismo una y otra vez, y probablemente pacientes por demorar en contestar.
+## 1. Decisión de alcance
 
-**Solución:** un bot de WhatsApp con IA que responde en nombre del psicólogo las preguntas administrativas (horarios, modalidad, precio, dirección, sistemas de salud), usando datos que el propio psicólogo configura, y entrega el link de Cal.com cuando el paciente quiere agendar.
+La **Fase 1 actual** entrega un bot de WhatsApp de texto para un psicólogo demo. El sistema utiliza Supabase Edge Functions sobre Deno, PostgreSQL de Supabase y Anthropic/Claude como fallback. La tabla `psicologos` es la fuente de conocimiento; no existe RAG ni base vectorial.
 
-## 2. Usuarios y Roles
-- **Usuario principal y quien paga:** el psicólogo independiente.
-- **Usuario secundario (interactúa, no paga ni se registra):** el paciente, vía WhatsApp.
+Google Auth, dashboard, editor de perfil, propiedad por usuario y operación multiusuario están diferidos a Fase 2.
 
-**Flujo del psicólogo:** se registra con Google → configura sus datos y conecta su WhatsApp → el bot queda operando solo.
-**Flujo del paciente:** escribe al WhatsApp del psicólogo → el bot responde → si quiere agendar, recibe el link de Cal.com.
+## 2. Usuarios y datos
 
-## 3. Alcance del V1
+- **Psicólogo:** usuario principal y futuro pagador. En Fase 1 opera un perfil demo; no tiene cuenta ni dashboard.
+- **Paciente:** escribe por WhatsApp y no crea cuenta. Su número normalizado y el historial de conversación se almacenan en Supabase.
+- **Operador técnico:** configura el proyecto, aplica migraciones y despliega; no es un usuario de producto.
 
-**V1 imprescindible**
-1. Registro y login del psicólogo (Google)
-2. Configuración de datos de consulta (modalidad, dirección, precio, tipo de cita, sistemas de salud, link de Cal.com, número de WhatsApp)
-3. Bot que responde preguntas del paciente usando esos datos
-4. Bot que entrega el link de Cal.com cuando el paciente quiere agendar
+La Fase 1 no tiene consentimiento digital, exportación, retención ni eliminación de datos. En una interacción de crisis, el texto del paciente no se conserva: se persiste un marcador redactado.
 
-**Después de validar:** confirmación manual de pago, conexión de calendario propia (reemplazando Cal.com), Instagram como canal adicional, métricas básicas en el dashboard.
+## 3. Leyenda de fases
 
-**Futuro:** bot que agenda directo sin pasar por Cal.com, recordatorios automáticos al paciente.
-
-## 4. Funcionalidades — Criterios de aceptación
-
-| # | Función | Prioridad | Criterio de terminado |
-|---|---------|-----------|------------------------|
-| F1 | Registro y login | P0 | Login con Google. Dashboard vacío con menú lateral al primer ingreso. |
-| F2 | Configuración de datos de consulta | P0 | Modalidad, dirección, precio, tipo de cita, sistemas de salud y número de WhatsApp son obligatorios. No se guarda si falta alguno. |
-| F3 | Bot responde preguntas del paciente | P0 | Responde horarios, modalidad, dirección, precio, sistemas de salud. Deriva al psicólogo cualquier pregunta clínica o personal. |
-| F4 | Bot entrega link de Cal.com | P0 | Solo cuando el paciente dice explícitamente que quiere agendar/reservar. |
-
-## 5. Stack Tecnológico
-
-| Pieza | Herramienta | Costo para empezar |
+| Etapa | Estado | Alcance |
 |---|---|---|
-| Canal de conversación | WhatsApp Business API (Cloud API de Meta) | $0 — pago por mensaje en producción |
-| Motor de IA | Claude API (Haiku 4.5) | $0 de licencia, pago por uso (tokens) |
-| Base de datos + Login + Backend | Supabase | $0 |
-| Hosting del dashboard | Cloudflare Pages | $0 (permite uso comercial) |
+| **Fase 1** | Actual | Bot de texto, un perfil demo, Supabase Edge Functions y fallback de Claude |
+| **Fase 2** | Diferida | Google Auth, dashboard, editor de perfil y ownership RLS |
+| **Más adelante** | No implementado | Piloto, canales adicionales, calendario y operación ampliada |
 
-**Costo inicial total: $0.**
+## 4. Objetivo de Fase 1
+
+Responder preguntas administrativas de un consultorio y entregar un link de agenda solo cuando el paciente lo solicita explícitamente. El bot no diagnostica, no prescribe y no sustituye atención profesional.
+
+Criterio de producto:
+
+1. Recibir mensajes de texto de WhatsApp.
+2. Validar el webhook de Meta y procesar status events sin respuestas no deseadas del bot.
+3. Resolver el perfil demo y conservar contexto acotado.
+4. Responder precio, horarios, dirección, modalidad y sistemas de salud desde datos estructurados.
+5. Entregar Cal.com solo ante una solicitud explícita de reserva.
+6. Rechazar preguntas clínicas y dirigir a atención profesional.
+7. Priorizar señales de crisis y entregar únicamente los recursos aprobados.
+8. Evitar respuestas duplicadas mediante `wamid` y registrar el resultado de procesamiento.
+
+## 5. Criterios funcionales actuales
+
+| ID | Criterio | Estado |
+|---|---|---|
+| F1 | HMAC-SHA256 sobre el cuerpo crudo antes de parsear | Implementado |
+| F2 | Challenge de Meta y status events | Implementado |
+| F3 | Parsing de múltiples mensajes y respuesta agregada | Implementado |
+| F4 | Routing por crisis, agenda, clínica, administración y Claude | Implementado |
+| F5 | Solo texto | Implementado |
+| F6 | Contexto de hasta 20 mensajes | Implementado |
+| F7 | Cal.com solo ante solicitud explícita | Implementado |
+| F8 | Recursos de crisis aprobados y Claude omitido | Implementado |
+| F9 | Persistencia redactada de crisis | Implementado |
+| F10 | Idempotencia por `wamid` y estado de entrega incierta | Implementado |
+
+La redacción exacta de crisis, sus palabras clave y las pruebas que protegen el comportamiento son la fuente de verdad en `supabase/functions/_shared/` y `supabase/functions/webhook/index.ts`.
 
 ## 6. Arquitectura
 
-**Flujo 1 — Configuración:** Psicólogo → Cloudflare Pages (dashboard) → login con Google (Supabase Auth) → formulario → Supabase (base de datos).
+```text
+Meta webhook
+  -> HMAC
+  -> parsing de payload
+  -> claim de wamid
+  -> perfil por meta_phone_number_id
+  -> historial acotado
+  -> router
+  -> Meta Graph API
+  -> persistencia y estado idempotente
+```
 
-**Flujo 2 — Conversación:** Paciente escribe primero → WhatsApp API (Meta) → Edge Function en Supabase → busca datos del psicólogo → Claude API redacta la respuesta → Edge Function responde por WhatsApp → si pide agendar, entrega link de Cal.com.
+El runtime productivo es `supabase/functions/`. `src/` es un árbol Node/local de compatibilidad y no es la implementación desplegada principal.
 
-El paciente siempre debe escribir primero, para mantenerse dentro de la ventana gratuita de 24h de WhatsApp.
+## 7. Stack
 
-## 7. Modelo de Datos
+| Componente | Estado |
+|---|---|
+| WhatsApp Business Cloud API | Implementado |
+| Supabase Postgres | Implementado |
+| Supabase Edge Functions + Deno | Implementado |
+| Node/TypeScript local | Compatibilidad y CI |
+| Anthropic/Claude Haiku 4.5 | Fallback configurado por entorno |
+| Cal.com | Link externo para agenda explícita |
+| Google Auth / dashboard | Fase 2 |
 
-**Tabla `psicologos`:** id, nombre, email, google_id, numero_whatsapp, modalidad, direccion, precio, tipo_de_cita, sistemas_de_salud, link_calcom, fecha_registro.
+## 8. Base de datos y seguridad
 
-**Tabla `conversaciones`:** id, psicologo_id, numero_paciente (dato personal), historial, ultima_actividad.
+El esquema efectivo incluye `psicologos`, `conversaciones` y `mensajes_procesados`, con RLS habilitado y permisos de cliente revocados. Las Edge Functions acceden server-side con `service_role`, que bypassa RLS.
 
-**Reglas de acceso:** cada psicólogo solo ve/edita su propia fila (Row Level Security). `conversaciones` solo la toca el backend.
+La Fase 2 debe agregar ownership por `auth.uid()` y políticas RLS específicas. No se debe exponer la service role ni asumir que RLS por sí solo resuelve autorización cuando el servidor usa un rol privilegiado.
 
-## 8. Seguridad Mínima
-- Validación en el servidor, nunca confiar solo en lo que llega desde la pantalla.
-- Claves y secretos (WhatsApp, Claude, Supabase) fuera del frontend.
-- Protección contra bots en login: cubierta por el login con Google.
+## 9. Privacidad y seguridad operativa
 
-## 9. Roadmap
-1. **Fase 1 (próxima):** probar que el bot conversa bien, con un psicólogo de prueba cargado a mano.
-2. **Fase 2:** dashboard con login y configuración — cualquier psicólogo se registra solo.
-3. **Fase 3:** piloto con 2-3 psicólogos reales y pacientes de verdad.
+- Número e historial de pacientes se almacenan.
+- El texto de crisis se redacta antes de persistirlo.
+- No hay consentimiento, retención, eliminación ni exportación.
+- La detección de crisis es heurística y no es evaluación clínica.
+- No hay canal de notificación al psicólogo.
+- `send-message` requiere secreto interno y no es una API pública.
+- Los secretos de Meta, Anthropic y Supabase permanecen en el servidor.
+
+## 10. Roadmap
+
+1. **Fase 1 actual:** conservar y validar el bot de texto con perfil demo.
+2. **Fase 2:** Google Auth, dashboard, editor de perfil, ownership RLS y eliminación del fallback de fila única.
+3. **Más adelante:** piloto, métricas, canales adicionales, calendario propio y evaluación de RAG solo si el modelo estructurado resulta insuficiente.
+
+## 11. Fuera de alcance
+
+No se promete certificación legal, escalamiento clínico, notificación profesional, consentimiento, retención, RAG actual, multimedia ni despliegue automático desde CI. Los costos y límites de los proveedores deben verificarse antes de una decisión comercial.
 
 ---
+
 MVP Forge · Álvaro Labs

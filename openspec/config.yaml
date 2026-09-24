@@ -1,11 +1,16 @@
 schema: spec-driven
 
 context: |
-  Tech stack: WhatsApp Business API (Cloud API de Meta) + Claude API (Haiku 4.5) + Supabase
-  Architecture: Conversational WhatsApp AI bot (secretary virtual) for psychologist
-  Purpose: Answers administrative patient questions, provides Cal.com scheduling links; clinical questions forwarded to psychologist
-  Testing: No test runner detected — strict_tdd: false
-  Phase 1 scope: Conversational bot on real WhatsApp with one test psychologist's data in database
+  Current phase: Phase 1 only — real WhatsApp text bot, one demo psychologist profile, Supabase Edge Functions, and Anthropic fallback.
+  Production runtime: Deno/Supabase Edge Functions under supabase/functions/.
+  Local compatibility runtime: Node/TypeScript under src/.
+  Knowledge source: public.psicologos; there is no RAG or vector database.
+  Active demo seed: supabase/seed/001_test_psicologo.sql.
+  Historical applied migration data: supabase/migrations/003_seed_test_psicologo.sql.
+  Effective Phase 1 schema includes psicologos.meta_phone_number_id, psicologos.horarios, mensajes_procesados, enabled RLS, revoked client grants, and server-side service-role access.
+  Google Auth, dashboard, profile editor, and per-user ownership are Phase 2 or deferred.
+  Crisis routing precedes every other route and never calls Claude. The approved resources are *4141 and Salud Responde 600 360 7777 option 2; raw crisis text is persisted only as a redacted placeholder.
+  Privacy limitations: patient number/history are stored; consent, retention, deletion, and clinical notification are not implemented.
 
 rules:
   proposal:
@@ -13,20 +18,30 @@ rules:
   specs:
     - Use Given/When/Then for scenarios
     - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Label scope as Phase 1, Phase 2, or Later
   design:
     - Include sequence diagrams for complex flows
     - Document architecture decisions with rationale
+    - Keep Deno/Supabase Edge Functions distinct from the Node compatibility tree
   tasks:
     - Group by phase, use hierarchical numbering
     - Keep tasks completable in one session
+  testing:
+    strict_tdd: false
+    node_test: "npm test"
+    node_typecheck: "npx tsc --noEmit"
+    deno_typecheck: "deno check --config supabase/functions/deno.json --no-lock supabase/functions/_shared/phase1.test.ts"
+    edge_test: "npm run test:edge"
+    ci_workflow: ".github/workflows/tests.yml"
+    ci_deploys: false
   apply:
     guidelines:
       - Follow existing code patterns
     tdd: false
-    test_command: ""
+    test_command: "npm test && npx tsc --noEmit && deno check --config supabase/functions/deno.json --no-lock supabase/functions/_shared/phase1.test.ts && npm run test:edge"
   verify:
-    test_command: ""
-    build_command: ""
+    test_command: "npm test && npx tsc --noEmit && deno check --config supabase/functions/deno.json --no-lock supabase/functions/_shared/phase1.test.ts && npm run test:edge"
+    build_command: "npm run build"
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas
