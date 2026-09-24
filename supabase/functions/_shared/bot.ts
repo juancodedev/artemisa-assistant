@@ -1,7 +1,7 @@
 // supabase/functions/_shared/bot.ts
-// Bot orchestrator for processing incoming patient messages
+// Bot orchestrator for processing incoming patient messages.
 
-import { Psicologo, RespuestaBot } from './types.ts';
+import { MensajeHistoria, Psicologo, RespuestaBot } from './types.ts';
 import { isValidWhatsAppNumber, normalizePhoneNumber } from './validation.ts';
 import { routeMessage } from './router.ts';
 
@@ -19,7 +19,8 @@ export interface ProcessedBotResult {
 export async function processIncomingMessage(
   patientNumber: string,
   messageText: string,
-  psicologo: Psicologo
+  psicologo: Psicologo,
+  history: MensajeHistoria[] = []
 ): Promise<ProcessedBotResult> {
   const normalizedNumber = normalizePhoneNumber(patientNumber);
 
@@ -32,7 +33,7 @@ export async function processIncomingMessage(
     };
   }
 
-  const result: RespuestaBot = await routeMessage(messageText, psicologo);
+  const result: RespuestaBot = await routeMessage(messageText, psicologo, history);
 
   return {
     success: true,

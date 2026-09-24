@@ -147,7 +147,8 @@ describe('WhatsApp Webhook Payload Handling', () => {
   });
 
   it('verifies Meta webhook challenge on GET', () => {
-    const valid = verifyWebhookChallenge('subscribe', 'artemisa-verify-token', 'test_challenge_123');
+    process.env.META_WEBHOOK_VERIFY_TOKEN = 'test-verify-token';
+    const valid = verifyWebhookChallenge('subscribe', 'test-verify-token', 'test_challenge_123');
     assert.equal(valid.isValid, true);
     assert.equal(valid.challenge, 'test_challenge_123');
 

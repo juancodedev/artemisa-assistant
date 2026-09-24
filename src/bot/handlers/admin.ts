@@ -12,7 +12,9 @@ export function handleAdminQuestion(message: string, psicologo: Psicologo): stri
   const lowerMsg = message.toLowerCase().trim();
 
   if (lowerMsg.includes('horario') || lowerMsg.includes('horarios')) {
-    return `Los horarios de ${psicologo.nombre} son en modalidad ${psicologo.modalidad}. Para agendar una cita, escribí "agendar" o "cita".`;
+    return psicologo.horarios?.trim()
+      ? `Los horarios de atención son: ${psicologo.horarios.trim()}.`
+      : `No cuento con horarios de atención disponibles en la información del consultorio. Consultalos directamente con ${psicologo.nombre}.`;
   }
 
   if (lowerMsg.includes('precio') || lowerMsg.includes('costo') || lowerMsg.includes('cuanto')) {
@@ -24,7 +26,7 @@ export function handleAdminQuestion(message: string, psicologo: Psicologo): stri
   }
 
   if (lowerMsg.includes('modalidad')) {
-    return `${psicologo.nombre} ofrece atención en modalidad ${psicologo.modalidad}. La consulta es presencial y virtual.`;
+    return `${psicologo.nombre} ofrece atención en modalidad: ${psicologo.modalidad}.`;
   }
 
   if (lowerMsg.includes('sistema') || lowerMsg.includes('obra social') || lowerMsg.includes('pre-paga') || lowerMsg.includes('obra_social')) {

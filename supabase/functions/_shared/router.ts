@@ -1,7 +1,7 @@
 // supabase/functions/_shared/router.ts
-// Decision router for Artemisa Assistant
+// Decision router for Artemisa Assistant.
 
-import { Psicologo, RespuestaBot } from './types.ts';
+import { MensajeHistoria, Psicologo, RespuestaBot } from './types.ts';
 import { sanitizeInput, isClinicalQuestion, isSchedulingRequest } from './validation.ts';
 import { generateResponse, quickAdminAnswer } from './claude.ts';
 
@@ -10,7 +10,8 @@ import { generateResponse, quickAdminAnswer } from './claude.ts';
  */
 export async function routeMessage(
   message: string,
-  psicologo: Psicologo
+  psicologo: Psicologo,
+  history: MensajeHistoria[] = []
 ): Promise<RespuestaBot> {
   const cleanMessage = sanitizeInput(message);
 
@@ -21,7 +22,7 @@ export async function routeMessage(
     };
   }
 
-  // 1. Explicit scheduling request -> Deliver Cal.com link
+  // Explicit scheduling requests are handled locally so no generated answer can leak the link.
   if (isSchedulingRequest(cleanMessage)) {
     return {
       tipo: 'programacion',
@@ -30,15 +31,14 @@ export async function routeMessage(
     };
   }
 
-  // 2. Clinical question / Medical symptom / Emergency -> Never answer clinically, forward to professional
+  // Clinical questions are never answered or forwarded to an invented channel.
   if (isClinicalQuestion(cleanMessage)) {
     return {
       tipo: 'clinica',
-      contenido: `Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad. 🤝`,
+      contenido: `Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad.`,
     };
   }
 
-  // 3. Fast-path administrative answer (0ms latency)
   const quickAnswer = quickAdminAnswer(cleanMessage, psicologo);
   if (quickAnswer) {
     return {
@@ -47,6 +47,5 @@ export async function routeMessage(
     };
   }
 
-  // 4. Fallback to Claude AI for contextual, nuanced administrative questions
-  return await generateResponse(cleanMessage, psicologo);
+  return await generateResponse(cleanMessage, psicologo, history);
 }

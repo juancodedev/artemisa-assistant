@@ -11,6 +11,7 @@ export interface Psicologo {
   tipo_de_cita: string;
   sistemas_de_salud: string[];
   link_calcom: string;
+  horarios?: string | null;
   created_at: string;
   updated_at: string;
 }

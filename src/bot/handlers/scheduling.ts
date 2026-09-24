@@ -2,6 +2,7 @@
 // Scheduling handler - provides Cal.com link when patient explicitly asks to schedule
 
 import { Psicologo } from '../../types';
+import { isSchedulingRequest } from '../../utils/validation';
 
 /**
  * Handle scheduling requests.
@@ -11,13 +12,7 @@ import { Psicologo } from '../../types';
 export function handleScheduling(message: string, psicologo: Psicologo): string | null {
   const lowerMsg = message.toLowerCase().trim();
 
-  const schedulingKeywords = [
-    'agendar', 'reservar', 'cita', 'horario', 'programar',
-    'cuando puedo', 'cuando est', 'disponibilidad', 'cal.com',
-    'calendario', 'link de cita', 'link'
-  ];
-
-  const wantsToSchedule = schedulingKeywords.some(kw => lowerMsg.includes(kw));
+  const wantsToSchedule = isSchedulingRequest(lowerMsg);
 
   if (wantsToSchedule) {
     return `Para agendar tu cita con ${psicologo.nombre}, usá este link: ${psicologo.link_calcom}`;

@@ -3,12 +3,23 @@
 
 import { Anthropic } from '@anthropic-ai/sdk';
 import { Psicologo, TipoConsulta, RespuestaBot } from '../types';
+import { isSchedulingRequest } from '../utils/validation';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 400;
 const TEMPERATURE = 0.5;
+const CLAUDE_TIMEOUT_MS = 15_000;
+const CLAUDE_MAX_RETRIES = 1;
+
+function getEnv(key: string): string {
+  if (typeof Deno !== 'undefined' && Deno.env) return Deno.env.get(key) || '';
+  return process.env[key] || '';
+}
 
 function getSystemPrompt(psicologo: Psicologo): string {
+  const hours = psicologo.horarios?.trim();
+  const hoursText = hours || 'No hay horarios de atención disponibles en los datos del consultorio.';
+
   return `Sos la Secretaria Virtual de ${psicologo.nombre}, profesional de la psicología. Tu única función es responder preguntas administrativas sobre el consultorio de ${psicologo.nombre}.
 
 Respondé SIEMPRE con un tono cálido, profesional y respetuoso en español rioplatense natural (usando voseo sutil: "podés", "escribime").
@@ -20,24 +31,22 @@ DATOS DEL/DE LA PROFESIONAL:
 - Honorarios / Precio de consulta: ${psicologo.precio}
 - Tipo de sesión: ${psicologo.tipo_de_cita}
 - Obras sociales / Prepagas aceptadas: ${psicologo.sistemas_de_salud.join(', ')}
-- Link para agendar turnos: ${psicologo.link_calcom}
+- Horarios: ${hoursText}
 
 REGLAS ESTRICTAS:
 1. Solo respondé dudas administrativas: horarios, honorarios/precios, ubicación, modalidad de atención, obras sociales y cómo reservar turno.
 2. Si te consultan por temas clínicos, síntomas, diagnósticos, medicación, crisis emocionales o salud mental: NO des consejos ni diagnósticos. Respondé textualmente: "Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad. 🤝"
-3. Si te piden un turno o cómo agendar: facilitá el link de Cal.com (${psicologo.link_calcom}).
-4. Nunca inventes información que no esté en la ficha. Si no sabés un dato, decí que no contás con esa información y que lo consulte directamente con el/la profesional.`;
+3. No incluyas ningún link de agenda en la respuesta. El link se entrega únicamente ante una solicitud explícita de agendar o reservar.
+4. Nunca inventes información que no esté en la ficha. Si no sabés un dato, decí que no contás con esa información y que lo consulte directamente con la profesional.`;
 }
 
 let client: Anthropic | null = null;
 
 function getAnthropicClient(): Anthropic | null {
-  const apiKey = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_API_KEY') : process.env.ANTHROPIC_API_KEY);
-  if (!apiKey) {
-    return null;
-  }
+  const apiKey = getEnv('ANTHROPIC_API_KEY');
+  if (!apiKey) return null;
   if (!client) {
-    const workspaceId = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_WORKSPACE_ID') : process.env.ANTHROPIC_WORKSPACE_ID);
+    const workspaceId = getEnv('ANTHROPIC_WORKSPACE_ID');
     client = new Anthropic({
       apiKey,
       ...(workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': workspaceId } } : {})
@@ -46,50 +55,67 @@ function getAnthropicClient(): Anthropic | null {
   return client;
 }
 
-/**
- * Generate a response to a patient's message using Claude.
- */
+function getFallbackResponse(psicologo: Psicologo): RespuestaBot {
+  return {
+    tipo: 'administrativa',
+    contenido: `Gracias por tu mensaje. ${psicologo.nombre} revisará tu consulta a la brevedad. Podés consultar por horarios, honorarios, ubicación o agendar tu cita.`
+  };
+}
+
+function removeSchedulingLinks(text: string, profileLink: string): string {
+  const escapedLink = profileLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text
+    .replace(new RegExp(escapedLink, 'gi'), '')
+    .replace(/https?:\/\/[^\s)]*cal\.com[^\s)]*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export async function generateResponse(
   message: string,
   psicologo: Psicologo
 ): Promise<RespuestaBot> {
   const claude = getAnthropicClient();
-  const model = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_MODEL') : process.env.ANTHROPIC_MODEL) || DEFAULT_MODEL;
+  const model = getEnv('ANTHROPIC_MODEL') || DEFAULT_MODEL;
 
-  if (!claude) {
-    console.warn('ANTHROPIC_API_KEY not configured. Falling back to default message.');
-    return {
-      tipo: 'administrativa',
-      contenido: `Gracias por tu mensaje. ${psicologo.nombre} revisará tu consulta a la brevedad. Podés consultar por horarios, honorarios, ubicación o agendar tu cita.`
-    };
-  }
+  if (!claude) return getFallbackResponse(psicologo);
 
   try {
-    const response = await claude.messages.create({
-      model,
-      max_tokens: MAX_TOKENS,
-      temperature: TEMPERATURE,
-      system: getSystemPrompt(psicologo),
-      messages: [{ role: 'user', content: message }]
-    });
+    const response = await claude.messages.create(
+      {
+        model,
+        max_tokens: MAX_TOKENS,
+        temperature: TEMPERATURE,
+        system: getSystemPrompt(psicologo),
+        messages: [{ role: 'user', content: message }]
+      },
+      { timeout: CLAUDE_TIMEOUT_MS, maxRetries: CLAUDE_MAX_RETRIES }
+    );
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
-    const lowerText = text.toLowerCase();
+    const text = response.content
+      .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('')
+      .trim();
+    if (!text) return getFallbackResponse(psicologo);
+
+    const schedulingRequested = isSchedulingRequest(message);
+    const contenido = schedulingRequested ? text : removeSchedulingLinks(text, psicologo.link_calcom);
+    if (!contenido) return getFallbackResponse(psicologo);
+
     let tipo: TipoConsulta = 'administrativa';
-
-    if (lowerText.includes('cal.com') || lowerText.includes('link') || lowerText.includes('agendar') || lowerText.includes('turno')) {
-      tipo = 'programacion';
-    } else if (lowerText.includes('atención directa') || lowerText.includes('contactará a la brevedad')) {
+    if (contenido.toLowerCase().includes('atención directa') || contenido.toLowerCase().includes('contactará a la brevedad')) {
       tipo = 'clinica';
+    } else if (schedulingRequested) {
+      tipo = 'programacion';
     }
 
     return {
       tipo,
-      contenido: text,
+      contenido,
       link_calcom: tipo === 'programacion' ? psicologo.link_calcom : undefined
     };
-  } catch (error) {
-    console.error('Claude API error:', error);
+  } catch {
     return {
       tipo: 'administrativa',
       contenido: `Gracias por tu consulta. En este momento estamos experimentando una demora; ${psicologo.nombre} te contactará a la brevedad.`
@@ -97,14 +123,17 @@ export async function generateResponse(
   }
 }
 
-/**
- * Quick local answers for straightforward administrative questions (0ms latency, 0 cost).
- */
 export function quickAdminAnswer(message: string, psicologo: Psicologo): string | null {
   const lowerMsg = message.toLowerCase().trim();
 
   if (lowerMsg.includes('precio') || lowerMsg.includes('costo') || lowerMsg.includes('cuanto') || lowerMsg.includes('cuánto') || lowerMsg.includes('valor')) {
     return `El valor de la consulta con ${psicologo.nombre} es ${psicologo.precio} (${psicologo.tipo_de_cita}).`;
+  }
+
+  if (lowerMsg.includes('horario') || lowerMsg.includes('horarios')) {
+    return psicologo.horarios?.trim()
+      ? `Los horarios de atención son: ${psicologo.horarios.trim()}.`
+      : `No cuento con horarios de atención disponibles en la información del consultorio. Consultalos directamente con ${psicologo.nombre}.`;
   }
 
   if (lowerMsg.includes('direccion') || lowerMsg.includes('dirección') || lowerMsg.includes('donde') || lowerMsg.includes('dónde') || lowerMsg.includes('ubicacion') || lowerMsg.includes('ubicación')) {

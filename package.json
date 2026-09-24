@@ -9,7 +9,9 @@
     "build": "tsc",
     "start": "tsx src/bot/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
-    "deploy:functions": "supabase functions deploy --no-verify-jwt",
+    "test:edge": "deno test --allow-env --allow-read --no-lock supabase/functions/_shared/phase1.test.ts",
+    "deploy:webhook": "supabase functions deploy webhook --no-verify-jwt",
+    "deploy:send-message": "supabase functions deploy send-message --no-verify-jwt",
     "db:migrate": "supabase db push"
   },
   "dependencies": {

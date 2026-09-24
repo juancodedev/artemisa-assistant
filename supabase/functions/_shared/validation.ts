@@ -60,7 +60,7 @@ export function isSchedulingRequest(message: string): boolean {
   const schedulingKeywords = [
     'agendar', 'reservar', 'sacar turno', 'pedir turno', 'un turno',
     'link de agenda', 'link para agendar', 'link cal', 'cal.com',
-    'agendar cita', 'reservar cita', 'agendarme', 'sacar una cita'
+    'agendar cita', 'reservar cita', 'agendarme', 'sacar una cita', 'quiero una cita'
   ];
   const lowerMsg = message.toLowerCase();
   return schedulingKeywords.some(kw => lowerMsg.includes(kw));

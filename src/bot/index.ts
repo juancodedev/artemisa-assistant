@@ -42,7 +42,7 @@ export async function initializeBot(psicologoId?: string): Promise<Psicologo | n
       return psicologos.find((p: any) => p.id === psicologoId) || null;
     }
     const psicologos = await supabase.getPsicologos();
-    return psicologos.length > 0 ? (psicologos[0] as Psicologo) : null;
+    return psicologos.length === 1 ? (psicologos[0] as Psicologo) : null;
   } catch (error) {
     console.error('Error in initializeBot:', error);
     return null;

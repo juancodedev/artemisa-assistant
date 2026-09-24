@@ -1,0 +1,7 @@
+project_id = "ihxlziemvtukpixnptob"
+
+[functions.webhook]
+verify_jwt = false
+
+[functions.send-message]
+verify_jwt = false

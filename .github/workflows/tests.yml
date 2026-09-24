@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run Node tests
+        run: npm test
+
+      - name: Typecheck Node source
+        run: npx tsc --noEmit
+
+      - name: Set up Deno 2.1
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.1.x
+
+      - name: Typecheck Edge tests
+        run: deno check --config supabase/functions/deno.json --no-lock supabase/functions/_shared/phase1.test.ts
+
+      - name: Run Edge tests
+        run: npm run test:edge
