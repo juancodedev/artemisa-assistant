@@ -90,7 +90,7 @@ Deno.serve(async (req: Request) => {
       ]);
     }
 
-    return new Response(JSON.stringify({ status: 'ok', handled: true }), {
+    return new Response(JSON.stringify({ status: 'ok', handled: true, sendResult }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

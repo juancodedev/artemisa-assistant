@@ -24,7 +24,7 @@ const mockPsicologo: Psicologo = {
   precio: '$15.000 ARS por sesión',
   tipo_de_cita: 'Sesión individual de 50 minutos',
   sistemas_de_salud: ['OSDE', 'Swiss Medical', 'Galeno'],
-  link_calcom: 'https://cal.com/dr-maria-lopez/30min',
+  link_calcom: 'https://cal.com/juancode-dev/dr-maria-lopez',
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 };

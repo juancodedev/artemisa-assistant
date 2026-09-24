@@ -17,6 +17,6 @@ insert into public.psicologos (
   '$15.000 ARS por sesión',
   'Sesión única / Paquete de 4 sesiones',
   '{"OSDE", "Swiss Medical", "Galeno", "IAPS"}',
-  'https://cal.com/dr-maria-lopez/30min'
+  'https://cal.com/juancode-dev/dr-maria-lopez'
 )
 on conflict (numero_whatsapp) do nothing;
