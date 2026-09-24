@@ -37,7 +37,11 @@ function getAnthropicClient(): Anthropic | null {
     return null;
   }
   if (!client) {
-    client = new Anthropic({ apiKey });
+    const workspaceId = (typeof Deno !== 'undefined' ? Deno.env.get('ANTHROPIC_WORKSPACE_ID') : process.env.ANTHROPIC_WORKSPACE_ID);
+    client = new Anthropic({
+      apiKey,
+      ...(workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': workspaceId } } : {})
+    });
   }
   return client;
 }
