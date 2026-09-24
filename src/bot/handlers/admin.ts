@@ -49,5 +49,5 @@ Aquí está la información disponible:
 - **Tipo de cita**: ${psicologo.tipo_de_cita}
 - **Sistemas de salud**: ${psicologo.sistemas_de_salud.join(', ')}
 
-Escribí "horarios", "precio", "dirección", "modalidad", "sistemas de salud" o "agendar" para más info.`;
+Escribe "horarios", "precio", "dirección", "modalidad", "sistemas de salud" o "agendar" para más info.`;
 }

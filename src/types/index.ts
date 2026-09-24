@@ -32,7 +32,7 @@ export interface Conversacion {
   updated_at: string;
 }
 
-export type TipoConsulta = 'administrativa' | 'clinica' | 'programacion';
+export type TipoConsulta = 'administrativa' | 'clinica' | 'programacion' | 'crisis';
 
 export interface RespuestaBot {
   tipo: TipoConsulta;

@@ -2,8 +2,11 @@
 // Decision router for Artemisa Assistant.
 
 import { MensajeHistoria, Psicologo, RespuestaBot } from './types.ts';
-import { sanitizeInput, isClinicalQuestion, isSchedulingRequest } from './validation.ts';
+import { sanitizeInput, isClinicalQuestion, isCrisisSignal, isSchedulingRequest } from './validation.ts';
 import { generateResponse, quickAdminAnswer } from './claude.ts';
+
+export const CRISIS_RESPONSE =
+  'Tu bienestar importa. Si estás pasando por una crisis, llamá gratis y confidencialmente a la Línea de Prevención del Suicidio al *4141, disponible las 24 horas. También podés llamar a Salud Responde al 600 360 7777 y seleccionar la opción 2. Esta conversación no reemplaza la atención profesional.';
 
 /**
  * Route an incoming message from a patient to the appropriate response handler.
@@ -19,6 +22,14 @@ export async function routeMessage(
     return {
       tipo: 'administrativa',
       contenido: `¡Hola! Soy la Secretaria Virtual de ${psicologo.nombre}. ¿En qué puedo ayudarte hoy? Podés consultarme por precios, horarios, ubicación o cómo agendar una cita.`,
+    };
+  }
+
+  // Crisis safety takes priority over all other routing, including scheduling and Claude.
+  if (isCrisisSignal(cleanMessage)) {
+    return {
+      tipo: 'crisis',
+      contenido: CRISIS_RESPONSE,
     };
   }
 

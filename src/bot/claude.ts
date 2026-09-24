@@ -41,8 +41,10 @@ REGLAS ESTRICTAS:
 }
 
 let client: Anthropic | null = null;
+let testClient: Anthropic | null | undefined;
 
 function getAnthropicClient(): Anthropic | null {
+  if (testClient !== undefined) return testClient;
   const apiKey = getEnv('ANTHROPIC_API_KEY');
   if (!apiKey) return null;
   if (!client) {
@@ -53,6 +55,11 @@ function getAnthropicClient(): Anthropic | null {
     });
   }
   return client;
+}
+
+export function setAnthropicClientForTests(testClientOverride: Anthropic | null): void {
+  testClient = testClientOverride;
+  client = null;
 }
 
 function getFallbackResponse(psicologo: Psicologo): RespuestaBot {

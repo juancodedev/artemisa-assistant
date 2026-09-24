@@ -36,6 +36,32 @@ export function normalizePhoneNumber(number: string): string {
 }
 
 /**
+ * Check if a message contains an explicit high-risk suicide or self-harm signal.
+ */
+export function isCrisisSignal(message: string): boolean {
+  const normalized = message
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const crisisKeywords = [
+    'suicidio',
+    'suicidarme',
+    'matarme',
+    'no quiero vivir',
+    'quitarme la vida',
+    'hacerme dano',
+    'lastimarme',
+    'quiero lastimarme',
+    'me quiero lastimar',
+    'autolesion',
+    'autolesionarme',
+    'no vale la pena vivir',
+    'quiero morir'
+  ];
+  return crisisKeywords.some((keyword) => normalized.includes(keyword));
+}
+
+/**
  * Check if a message contains clinical/medical content, emotional crisis, or personal psychological issues.
  * Returns true if the message should NEVER be handled by AI and must be forwarded.
  */

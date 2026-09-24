@@ -26,6 +26,7 @@ const UNAVAILABLE_RESPONSE =
   'En este momento el servicio está temporalmente no disponible. Por favor contactá a tu profesional directamente.';
 const MEDIA_RESPONSE =
   'Por el momento solo puedo procesar mensajes de texto. Para enviarme audios o documentos, por favor contactá directamente a tu psicólogo/a.';
+const CRISIS_USER_MESSAGE_PLACEHOLDER = '[mensaje de crisis omitido]';
 
 export interface WebhookDependencies {
   claimIncomingMessage: typeof claimIncomingMessage;
@@ -152,7 +153,7 @@ async function processMessage(
       [
         {
           role: 'user',
-          content: message.text,
+          content: botResult.tipo === 'crisis' ? CRISIS_USER_MESSAGE_PLACEHOLDER : message.text,
           timestamp: new Date().toISOString(),
         },
         {

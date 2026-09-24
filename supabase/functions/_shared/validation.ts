@@ -36,7 +36,33 @@ export function normalizePhoneNumber(number: string): string {
 }
 
 /**
- * Check if a message contains clinical/medical symptoms, crises or psychological issues.
+ * Check if a message contains an explicit high-risk suicide or self-harm signal.
+ */
+export function isCrisisSignal(message: string): boolean {
+  const normalized = message
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const crisisKeywords = [
+    'suicidio',
+    'suicidarme',
+    'matarme',
+    'no quiero vivir',
+    'quitarme la vida',
+    'hacerme dano',
+    'lastimarme',
+    'quiero lastimarme',
+    'me quiero lastimar',
+    'autolesion',
+    'autolesionarme',
+    'no vale la pena vivir',
+    'quiero morir'
+  ];
+  return crisisKeywords.some((keyword) => normalized.includes(keyword));
+}
+
+/**
+ * Check if a message contains clinical/medical symptoms or psychological issues.
  * Never answers clinical questions directly - always delegates to the professional.
  */
 export function isClinicalQuestion(message: string): boolean {

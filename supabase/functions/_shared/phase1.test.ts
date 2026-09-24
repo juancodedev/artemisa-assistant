@@ -22,9 +22,11 @@ import {
   quickAdminAnswer,
   setAnthropicClientForTests,
 } from './claude.ts';
+import { CRISIS_RESPONSE, routeMessage } from './router.ts';
+import { isCrisisSignal } from './validation.ts';
 import { handleSendMessage } from '../send-message/handler.ts';
 import { handleWebhook, type WebhookDependencies } from '../webhook/index.ts';
-import type { Psicologo } from './types.ts';
+import type { MensajeHistoria, Psicologo } from './types.ts';
 
 const profile: Psicologo = {
   id: 'profile-1',
@@ -526,6 +528,99 @@ Deno.test('uses bounded Claude request options, all text blocks, and strips gene
   assert.match(empty.contenido, /revisará tu consulta/);
 });
 
+Deno.test('prioritizes crisis signals over scheduling and never calls Claude', async () => {
+  const messages = [
+    'quiero suicidarme',
+    'pienso hacerme daño',
+    'me quiero lastimar',
+    'quiero agendar y quiero morir',
+    'NO QUIERO VIVIR',
+    'no vale la pena vivir',
+    'quiero quitarme la vida',
+    'pienso autolesionarme'
+  ];
+  let claudeCalls = 0;
+  setAnthropicClientForTests({
+    messages: {
+      create: async () => {
+        claudeCalls += 1;
+        return { content: [{ type: 'text', text: 'no debe usarse' }] };
+      },
+    },
+  } as unknown as Anthropic);
+
+  for (const message of messages) {
+    const result = await routeMessage(message, profile);
+    assert.equal(isCrisisSignal(message), true);
+    assert.equal(result.tipo, 'crisis');
+    assert.equal(result.contenido, CRISIS_RESPONSE);
+    assert.ok(result.contenido.includes('*4141'));
+    assert.ok(result.contenido.includes('600 360 7777'));
+    assert.ok(result.contenido.includes('opción 2'));
+    assert.ok(result.contenido.includes('gratis'));
+    assert.ok(result.contenido.includes('confidencialmente'));
+    assert.ok(result.contenido.includes('24 horas'));
+    assert.ok(result.contenido.includes('no reemplaza la atención profesional'));
+    assert.equal(result.contenido.includes('cal.com'), false);
+    assert.equal(result.contenido.includes('contactará'), false);
+  }
+
+  setAnthropicClientForTests(null);
+  assert.equal(claudeCalls, 0);
+});
+
+Deno.test('keeps the ordinary clinical response separate from crisis routing', async () => {
+  const result = await routeMessage('Tengo mucha ansiedad y no puedo dormir', profile);
+  assert.equal(result.tipo, 'clinica');
+  assert.equal(result.contenido, `Esta consulta requiere atención directa con tu psicólogo/a. ${profile.nombre} te contactará a la brevedad.`);
+});
+
+Deno.test('redacts raw crisis text while persisting the safety interaction', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const rawCrisisText = 'quiero suicidarme';
+  let persistedMessages: Array<{ role: string; content: string }> = [];
+  const dependencies = createWebhookDependencies({
+    processIncomingMessage: (async () => ({
+      success: true,
+      response: CRISIS_RESPONSE,
+      tipo: 'crisis',
+      normalizedPatientNumber: '+111',
+    })) as unknown as WebhookDependencies['processIncomingMessage'],
+    appendMessagesToConversacion: (async (
+      _id: string,
+      _history: MensajeHistoria[],
+      newMessages: MensajeHistoria[]
+    ) => {
+      persistedMessages = newMessages;
+      return true;
+    }) as unknown as WebhookDependencies['appendMessagesToConversacion'],
+  });
+  const rawBody = JSON.stringify({
+    object: 'whatsapp_business_account',
+    entry: [{
+      changes: [{
+        value: {
+          metadata: { phone_number_id: 'phone-1' },
+          messages: [{ from: '111', id: 'wamid-crisis', type: 'text', text: { body: rawCrisisText } }],
+        },
+      }],
+    }],
+  });
+
+  const response = await handleWebhook(
+    new Request('https://example.test/webhook', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': await createSignature(rawBody, 'test-app-secret') },
+      body: rawBody,
+    }),
+    dependencies
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(persistedMessages[0].content, '[mensaje de crisis omitido]');
+  assert.equal(persistedMessages[0].content.includes(rawCrisisText), false);
+  assert.equal(persistedMessages[1].content, CRISIS_RESPONSE);
+});
 Deno.test('rejects public send-message requests without the internal function secret', async () => {
   Deno.env.set('INTERNAL_FUNCTION_SECRET', 'internal-test-secret');
   const response = await handleSendMessage(

@@ -3,8 +3,11 @@
 // and delegates to the appropriate handler
 
 import { Psicologo, RespuestaBot } from '../types';
-import { isClinicalQuestion, isSchedulingRequest, sanitizeInput } from '../utils/validation';
+import { isClinicalQuestion, isCrisisSignal, isSchedulingRequest, sanitizeInput } from '../utils/validation';
 import { generateResponse, quickAdminAnswer } from './claude';
+
+export const CRISIS_RESPONSE =
+  'Tu bienestar importa. Si estás pasando por una crisis, llamá gratis y confidencialmente a la Línea de Prevención del Suicidio al *4141, disponible las 24 horas. También podés llamar a Salud Responde al 600 360 7777 y seleccionar la opción 2. Esta conversación no reemplaza la atención profesional.';
 
 /**
  * Process an incoming message from a patient and return the appropriate response.
@@ -22,7 +25,15 @@ export async function routeMessage(
     };
   }
 
-  // Rule 1: Check if it's an explicit scheduling request FIRST
+  // Rule 1: Crisis safety takes priority over all other routing.
+  if (isCrisisSignal(cleanMessage)) {
+    return {
+      tipo: 'crisis',
+      contenido: CRISIS_RESPONSE,
+    };
+  }
+
+  // Rule 2: Check if it's an explicit scheduling request FIRST
   if (isSchedulingRequest(cleanMessage)) {
     return {
       tipo: 'programacion',

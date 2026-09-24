@@ -1,17 +1,20 @@
 // tests/bot.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import type { Anthropic } from '@anthropic-ai/sdk';
 
 import {
   isValidWhatsAppNumber,
   normalizePhoneNumber,
   isClinicalQuestion,
+  isCrisisSignal,
   isSchedulingRequest,
   isAdminQuestion,
   sanitizeInput,
 } from '../src/utils/validation';
 
 import { routeMessage } from '../src/bot/router';
+import { setAnthropicClientForTests } from '../src/bot/claude';
 import { parseWebhookPayload, verifyWebhookChallenge } from '../src/services/whatsapp';
 import { Psicologo } from '../src/types';
 
@@ -47,6 +50,24 @@ describe('Validation Utils', () => {
     assert.equal(sanitizeInput('  <b>Hola</b> \x00 mundo  '), 'Hola mundo');
   });
 
+  it('detects high-risk crisis signals with accent-insensitive matching', () => {
+    const crisisMessages = [
+      'quiero suicidarme',
+      'pienso hacerme daño',
+      'me quiero lastimar',
+      'quiero agendar y quiero morir',
+      'NO QUIERO VIVIR',
+      'no vale la pena vivir',
+      'quiero quitarme la vida',
+      'pienso autolesionarme'
+    ];
+
+    for (const message of crisisMessages) {
+      assert.equal(isCrisisSignal(message), true);
+    }
+    assert.equal(isCrisisSignal('¿Cuánto cuesta la consulta?'), false);
+  });
+
   it('detects clinical questions without false positives on basic words', () => {
     // True clinical
     assert.equal(isClinicalQuestion('Tengo mucha ansiedad y no puedo dormir'), true);
@@ -80,6 +101,37 @@ describe('Bot Router & Fast-Path Responses', () => {
     const res = await routeMessage('Quiero agendar un turno para la semana que viene', mockPsicologo);
     assert.equal(res.tipo, 'programacion');
     assert.ok(res.contenido.includes(mockPsicologo.link_calcom));
+  });
+
+  it('prioritizes crisis responses over scheduling and does not call Claude', async () => {
+    let claudeCalls = 0;
+    setAnthropicClientForTests({
+      messages: {
+        create: async () => {
+          claudeCalls += 1;
+          return { content: [{ type: 'text', text: 'no debe usarse' }] };
+        },
+      },
+    } as unknown as Anthropic);
+
+    try {
+      for (const message of ['quiero suicidarme', 'pienso hacerme daño', 'me quiero lastimar', 'quiero agendar y quiero morir']) {
+        const res = await routeMessage(message, mockPsicologo);
+        assert.equal(res.tipo, 'crisis');
+        assert.ok(res.contenido.includes('*4141'));
+        assert.ok(res.contenido.includes('600 360 7777'));
+        assert.ok(res.contenido.includes('opción 2'));
+        assert.ok(res.contenido.includes('gratis'));
+        assert.ok(res.contenido.includes('confidencialmente'));
+        assert.ok(res.contenido.includes('24 horas'));
+        assert.ok(res.contenido.includes('no reemplaza la atención profesional'));
+        assert.equal(res.contenido.includes('cal.com'), false);
+        assert.equal(res.contenido.includes('contactará'), false);
+      }
+      assert.equal(claudeCalls, 0);
+    } finally {
+      setAnthropicClientForTests(null);
+    }
   });
 
   it('routes clinical questions to direct forward message without answering clinically', async () => {

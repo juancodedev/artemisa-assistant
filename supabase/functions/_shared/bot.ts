@@ -1,14 +1,14 @@
 // supabase/functions/_shared/bot.ts
 // Bot orchestrator for processing incoming patient messages.
 
-import { MensajeHistoria, Psicologo, RespuestaBot } from './types.ts';
+import { MensajeHistoria, Psicologo, RespuestaBot, TipoConsulta } from './types.ts';
 import { isValidWhatsAppNumber, normalizePhoneNumber } from './validation.ts';
 import { routeMessage } from './router.ts';
 
 export interface ProcessedBotResult {
   success: boolean;
   response: string;
-  tipo: string;
+  tipo: TipoConsulta;
   link_calcom?: string;
   normalizedPatientNumber: string;
 }
