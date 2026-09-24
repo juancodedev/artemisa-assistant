@@ -5,3 +5,7 @@ verify_jwt = false
 
 [functions.send-message]
 verify_jwt = false
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed/001_test_psicologo.sql"]
