@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "tsx src/bot/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
-    "deploy:functions": "supabase functions deploy",
+    "deploy:functions": "supabase functions deploy --no-verify-jwt",
     "db:migrate": "supabase db push"
   },
   "dependencies": {
