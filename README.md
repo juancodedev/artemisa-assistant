@@ -102,7 +102,7 @@ Los siguientes datos son **ficticios y solo de demostración**:
 |---|---|
 | Nombre | Dra. María López |
 | WhatsApp | `+5491123456789` |
-| `meta_phone_number_id` | `1247109808496718` |
+| `meta_phone_number_id` | `1365377426656451` |
 | Modalidad | Presencial y virtual |
 | Dirección | Consultorio Demo — Av. Siempre Viva 742, Santiago |
 | Precio | $35.000 CLP por sesión de 50 minutos |

@@ -15,7 +15,7 @@ insert into public.psicologos (
 ) values (
   'Dra. María López',
   '+5491123456789',
-  '1247109808496718',
+  '1365377426656451',
   'Presencial y virtual',
   'Consultorio Demo — Av. Siempre Viva 742, Santiago',
   '$35.000 CLP por sesión de 50 minutos',
