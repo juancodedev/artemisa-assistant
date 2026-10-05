@@ -170,7 +170,10 @@ async function processMessage(
       case 'optin_confirmed':
       // Unconsented: send the deterministic answer plus the consent request. No Claude,
       // no persistence, no conversation row.
-      case 'limited': {
+      case 'limited':
+      // Consented but the rate-limit counter is unavailable: the cost bound is gone, so
+      // pause the conversation rather than run the paid path with no ceiling.
+      case 'degraded': {
         const gatedDeliveryOutcome = await handleDeliveryResult(
           await dependencies.sendMessage(message.from, gateDecision.response),
           message.messageId,

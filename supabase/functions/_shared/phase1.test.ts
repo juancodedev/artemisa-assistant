@@ -35,6 +35,7 @@ import {
 } from './router.ts';
 import {
   CONSENT_REQUEST,
+  DEGRADED_SERVICE_RESPONSE,
   OPT_IN_CONFIRMED_NOTICE,
   OPT_IN_FAILED_NOTICE,
   RATE_LIMIT_RESPONSE,
@@ -1435,6 +1436,42 @@ Deno.test('fails open on a rate-limit outage but still gates an unconsented send
   assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
   assert.equal(probe.claudeCalls, 0);
   assert.equal(probe.conversationLookups, 0);
+});
+
+Deno.test('pauses a consented sender when the rate-limit counter is unavailable', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const probe = createGateProbe();
+  // A consented sender whose counter cannot be read. The rate limit is the only
+  // per-sender ceiling on Claude spend, so proceeding here would be unbounded spend.
+  const dependencies = createWebhookDependencies(probe.overrides(true, null));
+
+  const response = await handleWebhook(
+    await buildWebhookRequest('¿Cómo vengo sintiendo?', 'wamid-consented-no-counter'),
+    dependencies
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(probe.sentTexts, [DEGRADED_SERVICE_RESPONSE]);
+  // The paid path is not entered at all, and nothing is persisted or retried.
+  assert.equal(probe.claudeCalls, 0);
+  assert.equal(probe.conversationLookups, 0);
+  assert.equal(probe.persistedConversations, 0);
+  assert.deepEqual(probe.completedWamids, ['wamid-consented-no-counter']);
+});
+
+Deno.test('keeps failing open for an unconsented sender when the counter is unavailable', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  // The mirror image: this path costs no Claude call, so failing open costs nothing.
+  const decision = await evaluateGate('¿Cuál es el precio?', '+111', profile, {
+    hasSenderConsent: (async () =>
+      false) as unknown as WebhookDependencies['hasSenderConsent'],
+    recordSenderConsent: (async () =>
+      true) as unknown as WebhookDependencies['recordSenderConsent'],
+    consumeRateLimitSlot: (async () =>
+      null) as unknown as WebhookDependencies['consumeRateLimitSlot'],
+  });
+
+  assert.equal(decision.outcome, 'limited');
 });
 
 Deno.test('matches opt-in tokens across case, accents, and repeated whitespace', () => {

@@ -83,6 +83,14 @@ export const OPT_IN_CONFIRMED_NOTICE =
 export const OPT_IN_FAILED_NOTICE =
   'No pude registrar tu consentimiento en este momento. Por favor intentá de nuevo en un rato.';
 
+// Served to a CONSENTED sender when the rate-limit counter could not be read or
+// written. For a consented sender the counter is the only per-sender ceiling on Claude
+// spend, so letting the message through on a null count would remove the cost bound
+// entirely for exactly the sender who can spend the most. Saying so honestly is
+// better than serving unbounded generated answers.
+export const DEGRADED_SERVICE_RESPONSE =
+  'No puedo verificar tu límite de mensajes en este momento, así que pause la conversación por seguridad. Por favor intentá de nuevo en un rato o contactá directamente a tu psicólogo/a.';
+
 // ---------------------------------------------------------------------------
 // Decision
 // ---------------------------------------------------------------------------
@@ -99,10 +107,17 @@ export type GateDecision =
   | { outcome: 'allow'; reason: GateAllowReason }
   /** Sender is over the ceiling. Send `response` and mark completed. No retry. */
   | { outcome: 'rate_limited'; response: string }
-  /** Consent was recorded. Send `response` and mark completed. No Claude, no write. */
+  /**
+   * Consent was recorded. Send `response` and mark completed. No Claude, no write.
+   */
   | { outcome: 'optin_confirmed'; response: string }
   /** Unconsented and not opting in. Send `response` and mark completed. */
-  | { outcome: 'limited'; response: string };
+  | { outcome: 'limited'; response: string }
+  /**
+   * Consented, but the rate-limit counter could not be read or written. Send `response`
+   * and mark completed: the conversation is paused rather than run with no cost bound.
+   */
+  | { outcome: 'degraded'; response: string };
 
 export interface GateDependencies {
   hasSenderConsent: typeof hasSenderConsent;
@@ -211,15 +226,25 @@ export async function evaluateGate(
     rateLimitWindowStart()
   );
 
-  // FAIL OPEN, deliberately. A null count means the counter could not be read or
-  // written, and this gate lets the message through rather than denying it. The reason
-  // this is safe is that the rate limit is only a volume brake: the path it protects for
-  // an unconsented sender is deterministic, writes nothing, and costs no Claude call, so
-  // the worst a counter outage buys an attacker is extra local answers. Failing closed
-  // instead would deny service to an already-consented patient during a transient
-  // database blip, which is a real patient losing access to their psychologist.
-  // See consumeRateLimitSlot for the same tradeoff stated at the source.
-  if (messageCount !== null && messageCount > ceiling) {
+  // A null count means the counter could not be read or written. What to do about that
+  // DEPENDS ON THE CONSENT STATE, because the rate limit is not equally important to
+  // both classes of sender:
+  //
+  // - Unconsented: failing open costs nothing. This path makes no Claude call and
+  //   writes no history, so the worst an outage buys an attacker is extra deterministic
+  //   answers. Failing closed here would deny a prospective patient basic information.
+  // - Consented: failing open removes the ONLY per-sender ceiling on Claude spend,
+  //   for the one sender who can spend the most. During a sustained database,
+  //   permission, or missing-function outage that is unbounded spend, so the message is
+  //   answered honestly and the conversation is paused instead.
+  //
+  // Consent is resolved before this point precisely so this branch can tell the two
+  // cases apart. Do not collapse them back into a single null-tolerant comparison.
+  if (messageCount === null) {
+    if (consented) {
+      return { outcome: 'degraded', response: DEGRADED_SERVICE_RESPONSE };
+    }
+  } else if (messageCount > ceiling) {
     return { outcome: 'rate_limited', response: RATE_LIMIT_RESPONSE };
   }
 
