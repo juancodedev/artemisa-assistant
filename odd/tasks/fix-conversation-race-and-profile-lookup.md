@@ -63,6 +63,11 @@ Out of scope (requires a separate product decision, tracked below):
 - [x] T4 — Add regression tests covering concurrent/repeated conversation
       resolution and indexed profile resolution.
 - [x] T5 — Run `npm run test:edge` and `npm test`; record actual output.
+- [x] T6 — Make the historial timestamp parse exception-safe so no `historial` value
+      can abort the migration before the `UNIQUE` constraint is created
+      (native finding `R3-MALFORMED-HISTORY`).
+- [x] T7 — Pin `datestyle` and `timezone` for the transaction so the documented
+      merge-order guarantee does not depend on the runner's session GUCs.
 
 ## Authorized scope of writes
 
@@ -98,6 +103,15 @@ Out of scope (requires a separate product decision, tracked below):
       git and reportedly contains a live service-role key (bypasses RLS) and Meta
       token. Rotation is a console action and can only be performed by the
       maintainer.
+- [ ] P6 — A non-array `historial` is coerced to `'[]'` by the merge, silently
+      discarding content and contradicting this file's "never discarded" claim. The
+      column carries no `CHECK (jsonb_typeof(historial) = 'array')`. Not authorized
+      in this change; needs its own work unit.
+- [ ] P7 — The migration is all-or-nothing, so a `statement_timeout` or
+      `pg_cancel_backend` during the merge still leaves `conversaciones` without its
+      constraint. PL/pgSQL `when others` excludes `QUERY_CANCELED`, so the exception
+      handler cannot absorb it. Not a regression and not data-dependent; consider
+      splitting the merge from the constraint if the table ever grows large.
 
 ## Progress
 

@@ -28,6 +28,14 @@
 
 begin;
 
+-- Pin the session GUCs the merge order depends on. A zone-less instant such as
+-- '2024-03-01' denotes a different point under a different TimeZone, and
+-- '03/01/2024' means March 1 under MDY but January 3 under DMY, so without this
+-- the same rows can merge into a different historial on a different runner.
+-- SET LOCAL reverts both at COMMIT, leaving the session as it was found.
+set local datestyle = 'ISO, MDY';
+set local timezone = 'UTC';
+
 -- 0. The BEFORE UPDATE trigger created in migration 002 overwrites
 --    new.updated_at with now() on every UPDATE, which would defeat the explicit
 --    max(updated_at) merge in step 2. Suspend it for this transaction only, and
@@ -60,6 +68,31 @@ order by
   c.created_at desc nulls last,
   c.id asc;
 
+-- 1b. Exception-safe timestamp parse, scoped to this session only.
+--     jsonb_typeof only proves a value is a string, never that it PARSES, so a
+--     direct ::timestamptz cast raises on free text ("ayer a las 10"), on an
+--     out-of-range field (2024-13-45), on a shape-valid but calendar-invalid
+--     instant (2024-02-30), and on a negative UTC offset with no time-of-day
+--     (2024-03-01-05:30). Because this whole script is one transaction, any one of
+--     those aborts the run before step 4 creates the constraint the Edge Function
+--     upsert depends on. A shape regex cannot close that class, since the guard
+--     itself decides what Postgres would accept, so the cast is made
+--     exception-safe instead and every unusable value becomes null, which the merge
+--     treats as "no usable timestamp" and orders last while PRESERVING the entry.
+--     pg_temp scopes the helper to this session, leaving no object behind.
+create or replace function pg_temp.parse_historial_timestamp(value text)
+returns timestamptz
+language plpgsql
+immutable
+as $$
+begin
+  return value::timestamptz;
+exception
+  when others then
+    return null;
+end;
+$$;
+
 -- 2. Merge every group member's historial into the survivor.
 --    - historial is concatenated, never discarded.
 --    - Elements are ordered by their own message timestamp ascending. Elements
@@ -75,6 +108,15 @@ order by
 --    - The filter on element_ordinality drops only the NULL padding row that the
 --      LEFT JOIN LATERAL emits for a member with an empty historial array, so an
 --      empty array stays an empty array instead of becoming [null].
+--    - A value that Postgres cannot parse is ordered last rather than aborting the
+--      run, so historial content is never lost to a bad timestamp. The migration
+--      deliberately does not assume a well-formed shape: the only live writers
+--      stamp entries with new Date().toISOString() at webhook/index.ts:157 and
+--      webhook/index.ts:162, but src/services/supabase.ts:69-92 also accepts an
+--      arbitrary caller-supplied historial array with an unvalidated timestamp
+--      string, and that path must not be able to abort a schema migration. The one
+--      behavior that remains is inherent to any timestamp sort: a parseable but
+--      semantically wrong instant orders by the instant it actually denotes.
 --    - created_at becomes min(created_at) and updated_at becomes max(updated_at)
 --      across the group, the widest possible window for the conversation lifetime.
 --      A null merged value keeps the survivor's own value rather than nulling it.
@@ -116,7 +158,7 @@ from (
         when jsonb_typeof(entries.value) = 'object'
           and entries.value ? 'timestamp'
           and jsonb_typeof(entries.value -> 'timestamp') = 'string'
-        then (entries.value ->> 'timestamp')::timestamptz
+        then pg_temp.parse_historial_timestamp(entries.value ->> 'timestamp')
         else null
       end as element_timestamp
     from jsonb_array_elements(
