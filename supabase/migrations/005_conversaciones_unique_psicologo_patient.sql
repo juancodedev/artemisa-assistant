@@ -65,6 +65,13 @@ order by
 --    - Elements are ordered by their own message timestamp ascending. Elements
 --      without a usable string timestamp keep their relative order and are placed
 --      last, so nothing is lost and the resulting order stays deterministic.
+--    - Ties are broken by the owning member's identity and then by the element's
+--      position inside that member: member_created_at, member_id, element_ordinality.
+--      That chain is total, so re-running this migration cannot reorder an already
+--      merged historial. It must NOT be expressed as a window function inside the
+--      LATERAL below: a window there is scoped to a single member's jsonb array and
+--      restarts at 1 for every member, which would leave equal-timestamp elements
+--      from different members ordered by element_ordinality alone, i.e. arbitrarily.
 --    - The filter on element_ordinality drops only the NULL padding row that the
 --      LEFT JOIN LATERAL emits for a member with an empty historial array, so an
 --      empty array stays an empty array instead of becoming [null].
@@ -87,7 +94,8 @@ from (
         elements.element
         order by
           elements.element_timestamp asc nulls last,
-          elements.row_rank asc,
+          elements.member_created_at asc nulls last,
+          elements.member_id asc,
           elements.element_ordinality asc
       ) filter (where elements.element_ordinality is not null),
       '[]'::jsonb
@@ -102,9 +110,8 @@ from (
     select
       entries.value as element,
       entries.ordinality as element_ordinality,
-      row_number() over (
-        order by members.created_at asc nulls last, members.id asc
-      ) as row_rank,
+      members.created_at as member_created_at,
+      members.id as member_id,
       case
         when jsonb_typeof(entries.value) = 'object'
           and entries.value ? 'timestamp'
