@@ -13,6 +13,8 @@ import {
   claimIncomingMessage,
   completeIncomingMessage,
   getBoundedHistory,
+  getOrCreateConversacion,
+  getPsicologo,
   markDeliveryUncertain,
   selectPsicologoFromRows,
 } from './supabase.ts';
@@ -178,6 +180,226 @@ Deno.test('does not select a first profile when multiple rows have no matching I
   assert.equal(selectPsicologoFromRows([first, second], 'unknown-phone'), null);
   assert.equal(selectPsicologoFromRows([first, second], 'phone-2')?.id, 'profile-2');
   assert.equal(selectPsicologoFromRows([first], 'unknown-phone')?.id, 'profile-1');
+});
+
+interface StubStatement {
+  kind: 'upsert' | 'select' | 'insert' | 'update';
+  table: string;
+  onConflict?: string;
+  filters: Array<[string, unknown]>;
+  limit: number | null;
+  payload: Record<string, unknown> | null;
+}
+
+function applyStubFilters(
+  rows: Array<Record<string, unknown>>,
+  statement: StubStatement
+): Array<Record<string, unknown>> {
+  const matched = rows.filter((row) =>
+    statement.filters.every(([column, value]) => row[column] === value)
+  );
+  return statement.limit === null ? matched : matched.slice(0, statement.limit);
+}
+
+/**
+ * Stubs the psicologos table and records every statement the module issues, so a
+ * test can assert the shape of the query and not only its result.
+ */
+function createPsicologosStub(
+  rows: Array<Record<string, unknown>>,
+  statements: StubStatement[]
+): SupabaseClient {
+  return {
+    from(table: string) {
+      const statement: StubStatement = {
+        kind: 'select',
+        table,
+        filters: [],
+        limit: null,
+        payload: null,
+      };
+      const query = {
+        select() {
+          return query;
+        },
+        eq(column: string, value: unknown) {
+          statement.filters.push([column, value]);
+          return query;
+        },
+        // The real builder is thenable, so awaiting the chain terminates here.
+        limit(value: number) {
+          statement.limit = value;
+          statements.push(statement);
+          return Promise.resolve({ data: applyStubFilters(rows, statement), error: null });
+        },
+      };
+      return query;
+    },
+  } as unknown as SupabaseClient;
+}
+
+/**
+ * Stubs conversaciones with the uniqueness behavior the migration 005 constraint
+ * provides, and records every statement so a test can prove the resolution is one
+ * atomic upsert instead of a read-then-write pair.
+ */
+function createConversacionesStub(statements: StubStatement[]): SupabaseClient {
+  const rows = new Map<string, Record<string, unknown>>();
+  let createdCount = 0;
+
+  return {
+    from(table: string) {
+      const statement: StubStatement = {
+        kind: 'select',
+        table,
+        filters: [],
+        limit: null,
+        payload: null,
+      };
+      const query = {
+        upsert(
+          payload: Record<string, unknown>,
+          options?: { onConflict?: string }
+        ) {
+          statement.kind = 'upsert';
+          statement.payload = payload;
+          statement.onConflict = options?.onConflict;
+          return query;
+        },
+        select() {
+          return query;
+        },
+        eq(column: string, value: unknown) {
+          statement.filters.push([column, value]);
+          return query;
+        },
+        limit(value: number) {
+          statement.limit = value;
+          return query;
+        },
+        async single() {
+          statements.push(statement);
+          if (statement.kind === 'upsert') {
+            const key = `${statement.payload?.psicologo_id}|${statement.payload?.numero_paciente}`;
+            const existing = rows.get(key);
+            if (existing) {
+              // DO UPDATE SET only touches the columns present in the payload.
+              const merged = { ...existing, ...statement.payload };
+              rows.set(key, merged);
+              return { data: merged, error: null };
+            }
+            const timestamp = new Date().toISOString();
+            const created = {
+              id: `conversation-${++createdCount}`,
+              historial: [],
+              created_at: timestamp,
+              updated_at: timestamp,
+              ...statement.payload,
+            };
+            rows.set(key, created);
+            return { data: created, error: null };
+          }
+
+          const matched = applyStubFilters([...rows.values()], statement);
+          if (matched.length !== 1) return { data: null, error: { code: 'PGRST116' } };
+          return { data: matched[0], error: null };
+        },
+      };
+      return query;
+    },
+  } as unknown as SupabaseClient;
+}
+
+Deno.test('resolves the profile through the indexed phone number lookup, never a scan', async () => {
+  const statements: StubStatement[] = [];
+  const client = createPsicologosStub(
+    [
+      { ...profile, id: 'profile-1', meta_phone_number_id: 'meta-phone-1' },
+      { ...profile, id: 'profile-2', meta_phone_number_id: 'meta-phone-2' },
+    ],
+    statements
+  );
+
+  const resolved = await getPsicologo('meta-phone-2', client);
+
+  assert.equal(resolved?.id, 'profile-2');
+  // The partial unique index on meta_phone_number_id can only be used by a filtered
+  // query, so an unfiltered select('*') is the regression being guarded against.
+  assert.equal(statements.every((statement) => statement.filters.length > 0), true);
+  assert.deepEqual(statements[0].filters, [['meta_phone_number_id', 'meta-phone-2']]);
+  assert.equal(statements[0].limit, 1);
+  // The indexed query answered it, so no fallback query was needed at all.
+  assert.equal(statements.length, 1);
+});
+
+Deno.test('falls back to the sole profile and refuses to guess between profiles', async () => {
+  const soleProfile: StubStatement[] = [];
+  const sole = await getPsicologo(
+    'unknown-phone',
+    createPsicologosStub([{ ...profile, id: 'profile-1', meta_phone_number_id: null }], soleProfile)
+  );
+
+  assert.equal(sole?.id, 'profile-1');
+  assert.equal(soleProfile.length, 2);
+  assert.deepEqual(soleProfile[0].filters, [['meta_phone_number_id', 'unknown-phone']]);
+  // The fallback stays bounded at two rows instead of reading the whole table.
+  assert.deepEqual(soleProfile[1].filters, []);
+  assert.equal(soleProfile[1].limit, 2);
+
+  const ambiguousStatements: StubStatement[] = [];
+  const ambiguous = await getPsicologo(
+    'unknown-phone',
+    createPsicologosStub(
+      [
+        { ...profile, id: 'profile-1', meta_phone_number_id: null },
+        { ...profile, id: 'profile-2', meta_phone_number_id: 'meta-phone-2' },
+      ],
+      ambiguousStatements
+    )
+  );
+
+  assert.equal(ambiguous, null);
+  assert.equal(ambiguousStatements[ambiguousStatements.length - 1].limit, 2);
+
+  // With no phone number id at all, only the bounded fallback runs.
+  const withoutId: StubStatement[] = [];
+  assert.equal(
+    (
+      await getPsicologo(
+        undefined,
+        createPsicologosStub(
+          [{ ...profile, id: 'profile-1', meta_phone_number_id: null }],
+          withoutId
+        )
+      )
+    )?.id,
+    'profile-1'
+  );
+  assert.equal(withoutId.length, 1);
+  assert.deepEqual(withoutId[0].filters, []);
+  assert.equal(withoutId[0].limit, 2);
+});
+
+Deno.test('resolves a conversation with one atomic upsert instead of read-then-write', async () => {
+  const statements: StubStatement[] = [];
+  const client = createConversacionesStub(statements);
+
+  const first = await getOrCreateConversacion('profile-1', '+111', client);
+  const second = await getOrCreateConversacion('profile-1', '+111', client);
+
+  assert.equal(first?.id, 'conversation-1');
+  // Same logical conversation, same row, so the patient history stays in one place.
+  assert.equal(second?.id, first?.id);
+  assert.equal(statements.length, 2);
+  // Both statements are upserts: no read is issued before the write, which is exactly
+  // the race that used to create duplicate conversations.
+  assert.deepEqual(statements.map((statement) => statement.kind), ['upsert', 'upsert']);
+  assert.equal(statements[0].onConflict, 'psicologo_id,numero_paciente');
+  // The conflict target must be in the payload for PostgREST to build ON CONFLICT,
+  // and created_at must be absent so the duplicate path cannot clobber it.
+  assert.equal(statements[0].payload?.psicologo_id, 'profile-1');
+  assert.equal(statements[0].payload?.numero_paciente, '+111');
+  assert.equal('created_at' in (statements[0].payload ?? {}), false);
 });
 
 Deno.test('acknowledges delivery uncertainty as a duplicate on replay', async () => {
