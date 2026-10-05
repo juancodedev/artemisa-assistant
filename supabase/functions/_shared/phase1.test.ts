@@ -35,6 +35,8 @@ import {
 } from './router.ts';
 import {
   CONSENT_REQUEST,
+  OPT_IN_CONFIRMED_NOTICE,
+  OPT_IN_FAILED_NOTICE,
   RATE_LIMIT_RESPONSE,
   evaluateGate,
   isOptInToken,
@@ -1283,6 +1285,30 @@ Deno.test('confirms an opt-in token without Claude, without a conversation row, 
   assert.equal(probe.conversationLookups, 0);
   assert.equal(probe.persistedConversations, 0);
   assert.deepEqual(probe.completedWamids, ['wamid-optin']);
+});
+
+Deno.test('never confirms an opt-in whose consent write failed', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const probe = createGateProbe();
+  const dependencies = createWebhookDependencies({
+    ...probe.overrides(false),
+    recordSenderConsent: (async () =>
+      false) as unknown as WebhookDependencies['recordSenderConsent'],
+  });
+
+  const response = await handleWebhook(
+    await buildWebhookRequest('QUIERO', 'wamid-optin-write-failed'),
+    dependencies
+  );
+
+  assert.equal(response.status, 200);
+  // The decisive assertion: never tell a sender their consent was stored when it was not.
+  assert.equal(probe.sentTexts[0].includes(OPT_IN_CONFIRMED_NOTICE), false);
+  assert.ok(probe.sentTexts[0].includes(OPT_IN_FAILED_NOTICE));
+  // The consent request is repeated, so the retry is actionable.
+  assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
+  assert.equal(probe.claudeCalls, 0);
+  assert.deepEqual(probe.completedWamids, ['wamid-optin-write-failed']);
 });
 
 Deno.test('sends the over-limit text and completes instead of asking Meta to retry', async () => {

@@ -78,6 +78,11 @@ export const RATE_LIMIT_RESPONSE =
 export const OPT_IN_CONFIRMED_NOTICE =
   'Perfecto, registré tu consentimiento. Ya puedo responderte consultas abiertas y recordar esta conversación.';
 
+// Served instead of the confirmation when the consent write failed, so the sender is
+// never told a consent that was not stored and cannot tell that apart from being ignored.
+export const OPT_IN_FAILED_NOTICE =
+  'No pude registrar tu consentimiento en este momento. Por favor intentá de nuevo en un rato.';
+
 // ---------------------------------------------------------------------------
 // Decision
 // ---------------------------------------------------------------------------
@@ -226,8 +231,16 @@ export async function evaluateGate(
   // 4. Explicit opt-in. Consent is recorded, then confirmed with the greeting. No
   //    Claude call and no conversation row: the greeting is fully self-contained, so
   //    nothing is lost by not persisting the token that granted consent.
+  //
+  //    The write result decides the reply: a failed write reports as `limited` with an
+  //    honest reason, never a confirmation that did not happen.
   if (isOptInToken(cleanMessage)) {
-    await dependencies.recordSenderConsent(psicologo.id, senderKey);
+    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey))) {
+      return {
+        outcome: 'limited',
+        response: `${OPT_IN_FAILED_NOTICE}\n\n${CONSENT_REQUEST}`,
+      };
+    }
     return {
       outcome: 'optin_confirmed',
       response: `${OPT_IN_CONFIRMED_NOTICE}\n\n${greetingResponse(psicologo).contenido}`,
