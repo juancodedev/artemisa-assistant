@@ -7,6 +7,15 @@ import { Conversacion, MensajeHistoria, Psicologo } from './types.ts';
 const INBOUND_MESSAGES_TABLE = 'mensajes_procesados';
 const PROCESSING_LEASE_MS = 5 * 60 * 1000;
 
+// The indexed profile lookup can only ever match the single row the partial unique
+// index on meta_phone_number_id allows, so one row is the whole answer.
+const PROFILE_INDEXED_LOOKUP_LIMIT = 1;
+// The fallback needs to distinguish "exactly one profile" from "ambiguous", and two
+// rows are enough to prove ambiguity. Anything larger would re-introduce a scan.
+const PROFILE_FALLBACK_LOOKUP_LIMIT = 2;
+const CONVERSATIONS_TABLE = 'conversaciones';
+const CONVERSATION_CONFLICT_TARGET = 'psicologo_id,numero_paciente';
+
 type ProfileRow = Partial<Psicologo> & { id: string };
 
 export function selectPsicologoFromRows(
@@ -60,15 +69,42 @@ export function getSupabaseClient(): SupabaseClient {
 /**
  * Resolve a psychologist by Meta phone-number ID.
  *
- * The sole-row fallback is an explicit Phase 1 compatibility behavior only. It
- * is never used when the database contains more than one profile.
+ * The filtered lookup on `meta_phone_number_id` is the only reason the partial
+ * unique index from migration 004 exists, so it runs first and never scans the
+ * whole table.
+ *
+ * The sole-row fallback is an explicit Phase 1 compatibility behavior only. It is
+ * served by a bounded fallback query capped at two rows: one row means the
+ * single-profile installation and resolves, two rows prove ambiguity and resolve
+ * to null. It is therefore never used when the database contains more than one
+ * profile, exactly as before.
  */
 export async function getPsicologo(
   phoneNumberId?: string,
   client: SupabaseClient = getSupabaseClient()
 ): Promise<Psicologo | null> {
   try {
-    const { data, error } = await client.from('psicologos').select('*');
+    if (phoneNumberId) {
+      const { data, error } = await client
+        .from('psicologos')
+        .select('*')
+        .eq('meta_phone_number_id', phoneNumberId)
+        .limit(PROFILE_INDEXED_LOOKUP_LIMIT);
+
+      if (error) {
+        console.error('Error loading psychologist profile by phone number id');
+        return null;
+      }
+
+      const indexedMatch = selectPsicologoFromRows(data, phoneNumberId);
+      if (indexedMatch) return indexedMatch;
+    }
+
+    const { data, error } = await client
+      .from('psicologos')
+      .select('*')
+      .limit(PROFILE_FALLBACK_LOOKUP_LIMIT);
+
     if (error) {
       console.error('Error loading psychologist profiles');
       return null;
@@ -293,6 +329,19 @@ export async function failIncomingMessage(
 
 /**
  * Get or create an existing conversation for a patient and psychologist.
+ *
+ * Resolution is a single atomic statement, so concurrent deliveries of the same
+ * inbound message cannot split the patient history across duplicate rows the way
+ * the previous maybeSingle() read followed by a separate insert() did.
+ *
+ * The payload deliberately carries only the conflict target plus `ultima_actividad`.
+ * PostgREST builds the `ON CONFLICT ... DO UPDATE SET` clause exclusively from the
+ * columns present in the payload, so omitting `historial` and `created_at` means the
+ * duplicate path cannot overwrite an existing history or creation time, while the
+ * insert path still receives the column defaults (`'[]'` and `now()`).
+ *
+ * This depends on the unique constraint added in migration 005, so that migration
+ * must be applied before this code is deployed.
  */
 export async function getOrCreateConversacion(
   psicologoId: string,
@@ -301,34 +350,23 @@ export async function getOrCreateConversacion(
 ): Promise<Conversacion | null> {
   try {
     const { data, error } = await client
-      .from('conversaciones')
+      .from(CONVERSATIONS_TABLE)
+      .upsert(
+        {
+          psicologo_id: psicologoId,
+          numero_paciente: patientNumber,
+          ultima_actividad: new Date().toISOString(),
+        },
+        { onConflict: CONVERSATION_CONFLICT_TARGET }
+      )
       .select('*')
-      .eq('psicologo_id', psicologoId)
-      .eq('numero_paciente', patientNumber)
-      .maybeSingle();
-
-    if (error && error.code !== 'PGRST116') {
-      console.error('Error fetching conversation');
-      return null;
-    }
-    if (data) return data as Conversacion;
-
-    const { data: newConversation, error: insertError } = await client
-      .from('conversaciones')
-      .insert({
-        psicologo_id: psicologoId,
-        numero_paciente: patientNumber,
-        historial: [],
-        ultima_actividad: new Date().toISOString(),
-      })
-      .select()
       .single();
 
-    if (insertError) {
-      console.error('Error creating conversation');
+    if (error || !data) {
+      console.error('Error resolving conversation');
       return null;
     }
-    return newConversation as Conversacion;
+    return data as Conversacion;
   } catch {
     console.error('Exception in getOrCreateConversacion');
     return null;
