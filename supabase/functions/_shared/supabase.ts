@@ -15,6 +15,13 @@ const PROFILE_INDEXED_LOOKUP_LIMIT = 1;
 const PROFILE_FALLBACK_LOOKUP_LIMIT = 2;
 const CONVERSATIONS_TABLE = 'conversaciones';
 const CONVERSATION_CONFLICT_TARGET = 'psicologo_id,numero_paciente';
+const SENDER_CONSENTS_TABLE = 'sender_consents';
+const RATE_BUCKETS_TABLE = 'sender_rate_buckets';
+// Both conflict targets below must match a real constraint, not a bare index, so
+// PostgREST can build the ON CONFLICT clause. Migration 006 guarantees both.
+const SENDER_CONSENT_CONFLICT_TARGET = 'psicologo_id,numero_remitente';
+// Name of the atomic increment function created by migration 006.
+const RATE_LIMIT_SLOT_FUNCTION = 'consume_sender_rate_limit_slot';
 
 type ProfileRow = Partial<Psicologo> & { id: string };
 
@@ -400,5 +407,133 @@ export async function appendMessagesToConversacion(
   } catch {
     console.error('Exception in appendMessagesToConversacion');
     return false;
+  }
+}
+
+/**
+ * Whether a sender has explicitly opted in for this psychologist.
+ *
+ * Consent is scoped per (psicologo_id, numero_remitente), so a sender who opted in
+ * with one professional is still unconsented for another. The lookup is an equality
+ * match on the unique constraint declared by migration 006, so it is an index probe
+ * rather than a scan.
+ *
+ * Never throws. A query failure reports "not consented" instead of throwing, because
+ * the caller's response to that answer is the safe path: an unconsented sender gets a
+ * deterministic answer and no Claude call, whereas treating a database error as
+ * consent would put an unconsented stranger on the paid path.
+ */
+export async function hasSenderConsent(
+  psicologoId: string,
+  senderNumber: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean> {
+  try {
+    const { data, error } = await client
+      .from(SENDER_CONSENTS_TABLE)
+      .select('numero_remitente')
+      .eq('psicologo_id', psicologoId)
+      .eq('numero_remitente', senderNumber)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error loading sender consent');
+      return false;
+    }
+    return !!data;
+  } catch {
+    console.error('Exception loading sender consent');
+    return false;
+  }
+}
+
+/**
+ * Record a sender's opt-in consent. Idempotent: re-sending an opt-in token resolves
+ * to the same row.
+ *
+ * The payload deliberately carries only the conflict target. PostgREST builds the
+ * `ON CONFLICT ... DO UPDATE SET` clause exclusively from the columns present in the
+ * payload, so omitting `opted_in_at` means a repeat opt-in cannot restate when consent
+ * was first given, and omitting `origen` and `created_at` means the conflict path
+ * cannot clobber how consent was captured or when the row was created. The insert
+ * path still receives the column defaults.
+ *
+ * Never throws; a failed write reports false so the caller can decide what to tell the
+ * sender instead of claiming a consent that was not stored.
+ */
+export async function recordSenderConsent(
+  psicologoId: string,
+  senderNumber: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean> {
+  try {
+    const { data, error } = await client
+      .from(SENDER_CONSENTS_TABLE)
+      .upsert(
+        {
+          psicologo_id: psicologoId,
+          numero_remitente: senderNumber,
+        },
+        { onConflict: SENDER_CONSENT_CONFLICT_TARGET }
+      )
+      .select('numero_remitente')
+      .maybeSingle();
+
+    if (error || !data) {
+      console.error('Error recording sender consent');
+      return false;
+    }
+    return true;
+  } catch {
+    console.error('Exception in recordSenderConsent');
+    return false;
+  }
+}
+
+/**
+ * Consume one rate-limit slot for a sender window and return the resulting count.
+ *
+ * The counter update is a single `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING`
+ * statement executed by `consume_sender_rate_limit_slot` from migration 006, so the
+ * increment happens inside Postgres under the row lock the conflict takes. Two
+ * concurrent webhooks for the same sender and window therefore serialize instead of
+ * both reading the same pre-increment value, and neither can consume the same slot.
+ *
+ * It is a function rather than a PostgREST `.upsert()` because PostgREST builds
+ * `DO UPDATE SET` only from the payload columns and has no arithmetic form, so a
+ * payload of `{ message_count: 1 }` would blind-set the counter back to 1 on every
+ * call and the ceiling could never be reached. Migration 006 must be applied before
+ * this is deployed, exactly as migration 005 must precede getOrCreateConversacion.
+ *
+ * Returns `null` on error so the caller chooses explicitly rather than inheriting a
+ * silent default. `gate.ts` chooses to FAIL OPEN: the rate limit is a volume brake,
+ * not the cost control that matters, because the path it protects for a non-consented
+ * sender makes no Claude call and writes no history at all. Failing open on a counter
+ * error can therefore cost a handful of extra deterministic answers, whereas failing
+ * closed would deny service to an already-consented patient during a transient
+ * database blip. A `null` count must still never be read as "below the ceiling" for
+ * any caller that does gate paid work.
+ */
+export async function consumeRateLimitSlot(
+  psicologoId: string,
+  senderNumber: string,
+  windowStartedAt: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<number | null> {
+  try {
+    const { data, error } = await client.rpc(RATE_LIMIT_SLOT_FUNCTION, {
+      p_psicologo_id: psicologoId,
+      p_numero_remitente: senderNumber,
+      p_window_started_at: windowStartedAt,
+    });
+
+    if (error || typeof data !== 'number') {
+      console.error('Error consuming rate limit slot');
+      return null;
+    }
+    return data;
+  } catch {
+    console.error('Exception in consumeRateLimitSlot');
+    return null;
   }
 }

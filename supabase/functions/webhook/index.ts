@@ -12,13 +12,17 @@ import {
   appendMessagesToConversacion,
   claimIncomingMessage,
   completeIncomingMessage,
+  consumeRateLimitSlot,
   failIncomingMessage,
   getBoundedHistory,
   getOrCreateConversacion,
   getPsicologo,
+  hasSenderConsent,
   markDeliveryUncertain,
+  recordSenderConsent,
 } from '../_shared/supabase.ts';
 import { processIncomingMessage } from '../_shared/bot.ts';
+import { evaluateGate } from '../_shared/gate.ts';
 import { normalizePhoneNumber } from '../_shared/validation.ts';
 import { aggregateBatchOutcomes, type BatchMessageOutcome } from '../_shared/batch.ts';
 
@@ -39,6 +43,13 @@ export interface WebhookDependencies {
   completeIncomingMessage: typeof completeIncomingMessage;
   failIncomingMessage: typeof failIncomingMessage;
   markDeliveryUncertain: typeof markDeliveryUncertain;
+  // The gate and the three data-access helpers it composes are injected separately on
+  // purpose: a test can override evaluateGate alone to pin a decision, or override only
+  // the three helpers to drive the real gate logic end to end through this handler.
+  evaluateGate: typeof evaluateGate;
+  hasSenderConsent: typeof hasSenderConsent;
+  recordSenderConsent: typeof recordSenderConsent;
+  consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
 const defaultDependencies: WebhookDependencies = {
@@ -52,6 +63,10 @@ const defaultDependencies: WebhookDependencies = {
   completeIncomingMessage,
   failIncomingMessage,
   markDeliveryUncertain,
+  evaluateGate,
+  hasSenderConsent,
+  recordSenderConsent,
+  consumeRateLimitSlot,
 };
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -121,6 +136,55 @@ async function processMessage(
         dependencies
       );
       return deliveryOutcome || markMessageCompleted(message.messageId, dependencies);
+    }
+
+    const gateDecision = await dependencies.evaluateGate(
+      message.text,
+      message.from,
+      psicologo,
+      {
+        hasSenderConsent: dependencies.hasSenderConsent,
+        recordSenderConsent: dependencies.recordSenderConsent,
+        consumeRateLimitSlot: dependencies.consumeRateLimitSlot,
+      }
+    );
+
+    // The gate runs before getOrCreateConversacion on purpose: a sender the gate does
+    // not admit must not get a conversation row, so no history exists to be written
+    // even if this handler were to change later.
+    //
+    // The switch is exhaustive over GateDecision on purpose. The three gated outcomes
+    // happen to share a shape today, but collapsing them into one `!== 'allow'` branch
+    // would let a future outcome be handled by accident. Naming each one here means a
+    // new outcome fails to compile instead of being silently answered.
+    //
+    // None of the three returns 'retry', and that is not an omission. These outcomes
+    // are deliberate, reproducible answers, so a retry would make Meta redeliver the
+    // same message, charging the sender a second rate-limit slot and the business a
+    // second outbound message for no new information, and each attempt would re-enter
+    // this gate and burn another slot.
+    switch (gateDecision.outcome) {
+      // Over the ceiling: send the over-limit text. No Claude, no persistence.
+      case 'rate_limited':
+      // Consent recorded: send the confirmation and greeting. No Claude, no persistence.
+      case 'optin_confirmed':
+      // Unconsented: send the deterministic answer plus the consent request. No Claude,
+      // no persistence, no conversation row.
+      case 'limited':
+      // Consented but the rate-limit counter is unavailable: the cost bound is gone, so
+      // pause the conversation rather than run the paid path with no ceiling.
+      case 'degraded': {
+        const gatedDeliveryOutcome = await handleDeliveryResult(
+          await dependencies.sendMessage(message.from, gateDecision.response),
+          message.messageId,
+          dependencies
+        );
+        return gatedDeliveryOutcome || markMessageCompleted(message.messageId, dependencies);
+      }
+      // A crisis signal, or an existing consent. From here the pipeline is exactly what
+      // it was before the gate existed.
+      case 'allow':
+        break;
     }
 
     const conversation = await dependencies.getOrCreateConversacion(
