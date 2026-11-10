@@ -35,22 +35,20 @@ export function normalizePhoneNumber(number: string): string {
   return clean.startsWith('+') ? clean : `+${clean}`;
 }
 
-// The phrase ends the sentence: "me mato." and "terminar con todo" as a whole thought,
-// never "me mato estudiando" or "terminar con todo el papeleo".
-const END_OF_THOUGHT = String.raw`(?=\s*(?:[.!?,;]|$))`;
-
 // Matched against lowercased text with accents removed, so patterns are written
-// without accents. Leaning towards a match is deliberate, but a match replaces the
-// patient's request with the helpline, so everyday idioms are kept out (see the
-// end-of-thought patterns below).
+// without accents. Leaning towards a match is deliberate: a false positive costs the
+// patient's request, a false negative leaves a person in crisis without the helpline.
+// So the two phrases that are also everyday idioms match by default, and only their
+// known idiomatic continuations are excluded: "me mato estudiando", "terminar con todo
+// el papeleo". "Esta noche me mato" and "terminar con todo esto" still match.
 const CRISIS_PATTERNS: readonly RegExp[] = [
   /suicid/,
   /\bmatarme\b/,
   /\bme (?:quiero|voy a|gustaria|quisiera|pienso) matar\b/,
-  new RegExp(String.raw`\bme mato${END_OF_THOUGHT}`),
+  /\bme mato\b(?!\s+(?:estudiando|trabajando|haciendo|corriendo|entrenando|de (?:la )?risa|en el|en la|con el|con la|con los|con las)\b)/,
   /\bquitarme la vida\b/,
   /\b(?:acabar|terminar) con mi vida\b/,
-  new RegExp(String.raw`\b(?:acabar|terminar) con todo${END_OF_THOUGHT}`),
+  /\b(?:acabar|terminar) con todo\b(?!\s+(?:el|la|los|las|lo|un|una|mi|mis|tu|tus|su|sus|del)\b)/,
   /\bno (?:quiero|deseo) (?:seguir )?(?:vivir|viviendo|estar viv[oa])\b/,
   /\bno vale la pena (?:seguir )?(?:vivir|viviendo)\b/,
   /\bno tiene sentido (?:seguir )?(?:vivir|viviendo)\b/,

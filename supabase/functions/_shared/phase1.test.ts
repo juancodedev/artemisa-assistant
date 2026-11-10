@@ -974,6 +974,10 @@ Deno.test('detects real first-person crisis phrasing without flagging everyday s
     'me voy a tirar al metro',
     'me voy a tomar todas las pastillas',
     'hoy me mato.',
+    'esta noche me mato',
+    'me mato si sigo así',
+    'quiero terminar con todo esto',
+    'voy a acabar con todo de una vez',
   ];
   for (const phrase of crisisPhrases) {
     assert.equal(isCrisisSignal(phrase), true, `expected a crisis signal for ${JSON.stringify(phrase)}`);
