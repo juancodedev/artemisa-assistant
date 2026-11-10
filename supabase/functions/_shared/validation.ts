@@ -35,16 +35,22 @@ export function normalizePhoneNumber(number: string): string {
   return clean.startsWith('+') ? clean : `+${clean}`;
 }
 
+// The phrase ends the sentence: "me mato." and "terminar con todo" as a whole thought,
+// never "me mato estudiando" or "terminar con todo el papeleo".
+const END_OF_THOUGHT = String.raw`(?=\s*(?:[.!?,;]|$))`;
+
 // Matched against lowercased text with accents removed, so patterns are written
-// without accents. Over-matching is deliberate: a false positive costs one message
-// with a helpline, while a false negative leaves a person in crisis without one.
+// without accents. Leaning towards a match is deliberate, but a match replaces the
+// patient's request with the helpline, so everyday idioms are kept out (see the
+// end-of-thought patterns below).
 const CRISIS_PATTERNS: readonly RegExp[] = [
   /suicid/,
   /\bmatarme\b/,
   /\bme (?:quiero|voy a|gustaria|quisiera|pienso) matar\b/,
-  /\bme mato\b/,
+  new RegExp(String.raw`\bme mato${END_OF_THOUGHT}`),
   /\bquitarme la vida\b/,
-  /\b(?:acabar|terminar) con (?:mi vida|todo)\b/,
+  /\b(?:acabar|terminar) con mi vida\b/,
+  new RegExp(String.raw`\b(?:acabar|terminar) con todo${END_OF_THOUGHT}`),
   /\bno (?:quiero|deseo) (?:seguir )?(?:vivir|viviendo|estar viv[oa])\b/,
   /\bno vale la pena (?:seguir )?(?:vivir|viviendo)\b/,
   /\bno tiene sentido (?:seguir )?(?:vivir|viviendo)\b/,

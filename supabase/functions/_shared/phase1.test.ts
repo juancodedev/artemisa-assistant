@@ -973,6 +973,7 @@ Deno.test('detects real first-person crisis phrasing without flagging everyday s
     'quiero ahorcarme',
     'me voy a tirar al metro',
     'me voy a tomar todas las pastillas',
+    'hoy me mato.',
   ];
   for (const phrase of crisisPhrases) {
     assert.equal(isCrisisSignal(phrase), true, `expected a crisis signal for ${JSON.stringify(phrase)}`);
@@ -984,6 +985,12 @@ Deno.test('detects real first-person crisis phrasing without flagging everyday s
     'voy a matar el tiempo mientras espero',
     'me mata el tráfico para llegar',
     'quiero agendar una cita',
+    // Everyday idioms: a crisis match replaces the patient's request with the
+    // helpline, so these must keep reaching the ordinary pipeline.
+    'me mato estudiando, ¿puedo agendar el jueves?',
+    'me mato de la risa con eso',
+    'quiero terminar con todo el papeleo del reembolso',
+    'necesito acabar con todo el trámite de la isapre',
   ];
   for (const phrase of everydaySpeech) {
     assert.equal(isCrisisSignal(phrase), false, `expected no crisis signal for ${JSON.stringify(phrase)}`);
@@ -1003,6 +1010,28 @@ Deno.test('sends the crisis line and stores nothing for a non-consented sender',
   assert.equal(probe.conversationLookups, 0);
   assert.equal(probe.persistedConversations, 0);
   assert.deepEqual(probe.completedWamids, ['wamid-crisis-stranger']);
+});
+
+Deno.test('asks Meta to redeliver a crisis message whose helpline was not sent', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  for (const claim of ['claimed', 'uncertain']) {
+    const failures: string[] = [];
+    const response = await handleWebhook(
+      await buildWebhookRequest('me quiero matar', `wamid-crisis-send-failed-${claim}`),
+      createWebhookDependencies({
+        claimIncomingMessage: (async () => claim) as unknown as WebhookDependencies['claimIncomingMessage'],
+        sendMessage: (async () => ({ success: false, delivery: 'failed' })) as unknown as WebhookDependencies['sendMessage'],
+        failIncomingMessage: (async (_wamid: string, code: string) => {
+          failures.push(code);
+          return true;
+        }) as unknown as WebhookDependencies['failIncomingMessage'],
+      })
+    );
+
+    // A retry is the only way the patient can still receive the line.
+    assert.notEqual(response.status, 200, claim);
+    assert.deepEqual(failures, ['delivery_failed'], claim);
+  }
 });
 
 Deno.test('sends the crisis line through every database failure', async () => {
