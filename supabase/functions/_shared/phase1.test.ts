@@ -1842,7 +1842,7 @@ Deno.test('matches opt-in tokens across case, accents, and repeated whitespace',
   }
   // Only the exact word counts: short replies that appear incidentally, the old tokens,
   // and a free-text message that merely contains the word are not consent.
-  for (const message of ['', 'Hola', 'QUIERO', 'si', 'sí', 'ok', 'De acuerdo', 'ACCEPTO', 'acepto el precio', 'no acepto']) {
+  for (const message of ['', 'Hola', 'QUIERO', 'si', 'sí', 'ok', 'De acuerdo', 'ACCEPTO', 'acepto el precio', 'no acepto', '¿Acepto?', 'acepto?', '¿BAJA?']) {
     assert.equal(isOptInToken(message), false, `expected ${JSON.stringify(message)} not to opt in`);
   }
 });

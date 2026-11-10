@@ -180,8 +180,9 @@ function normalizeForTokenMatch(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    // Trailing or leading punctuation ("BAJA.", "¡acepto!") does not change the word.
-    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+    // A period or exclamation marks ("BAJA.", "¡acepto!") do not change the word, but
+    // a question mark does: "¿Acepto?" asks what accepting means and is not consent.
+    .replace(/^[¡!.\s]+|[!.\s]+$/g, '');
 }
 
 const NORMALIZED_OPT_IN_TOKENS = new Set(OPT_IN_TOKENS.map(normalizeForTokenMatch));
