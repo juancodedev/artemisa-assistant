@@ -17,8 +17,9 @@ import {
   getBoundedHistory,
   getOrCreateConversacion,
   getPsicologo,
-  hasSenderConsent,
+  getSenderConsentState,
   markDeliveryUncertain,
+  recordConsentPromptShown,
   recordSenderConsent,
 } from '../_shared/supabase.ts';
 import { processIncomingMessage } from '../_shared/bot.ts';
@@ -62,11 +63,12 @@ export interface WebhookDependencies {
   completeIncomingMessage: typeof completeIncomingMessage;
   failIncomingMessage: typeof failIncomingMessage;
   markDeliveryUncertain: typeof markDeliveryUncertain;
-  // The gate and the three data-access helpers it composes are injected separately on
+  // The gate and the data-access helpers it composes are injected separately on
   // purpose: a test can override evaluateGate alone to pin a decision, or override only
-  // the three helpers to drive the real gate logic end to end through this handler.
+  // the data-access helpers to drive the real gate logic end to end through this handler.
   evaluateGate: typeof evaluateGate;
-  hasSenderConsent: typeof hasSenderConsent;
+  getSenderConsentState: typeof getSenderConsentState;
+  recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
@@ -83,7 +85,8 @@ const defaultDependencies: WebhookDependencies = {
   failIncomingMessage,
   markDeliveryUncertain,
   evaluateGate,
-  hasSenderConsent,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
   consumeRateLimitSlot,
 };
@@ -142,7 +145,8 @@ async function persistCrisisExchange(
     if (!psicologo) return true;
 
     const senderKey = normalizePhoneNumber(message.from);
-    if (!(await dependencies.hasSenderConsent(psicologo.id, senderKey))) return true;
+    const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
+    if (!consentState.consented) return true;
 
     const conversation = await dependencies.getOrCreateConversacion(psicologo.id, senderKey);
     if (!conversation) return false;
@@ -237,8 +241,10 @@ async function processMessage(
       message.text,
       message.from,
       psicologo,
+      message.messageId,
       {
-        hasSenderConsent: dependencies.hasSenderConsent,
+        getSenderConsentState: dependencies.getSenderConsentState,
+        recordConsentPromptShown: dependencies.recordConsentPromptShown,
         recordSenderConsent: dependencies.recordSenderConsent,
         consumeRateLimitSlot: dependencies.consumeRateLimitSlot,
       }

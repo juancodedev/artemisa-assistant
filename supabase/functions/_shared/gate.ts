@@ -1,5 +1,5 @@
 // supabase/functions/_shared/gate.ts
-// Sender admission gate: crisis handling, rate limiting, and explicit opt-in consent.
+// Sender admission gate: rate limiting and informed, versioned opt-in consent.
 //
 // The business number answers any sender that reaches it, so this module decides what
 // a given sender is allowed to cost before the webhook spends anything. It answers one
@@ -9,10 +9,11 @@
 import { greetingResponse, routeDeterministicMessage } from './router.ts';
 import {
   consumeRateLimitSlot,
-  hasSenderConsent,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
 } from './supabase.ts';
-import { Psicologo } from './types.ts';
+import { ConsentPolicy, Psicologo } from './types.ts';
 import { normalizePhoneNumber, sanitizeInput } from './validation.ts';
 
 // ---------------------------------------------------------------------------
@@ -48,18 +49,11 @@ export const CONSENTED_HOURLY_CEILING = 60;
 // which is an acceptable trade for a single atomic statement.
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
-// Opt-in phrases, compared after uppercasing, accent stripping and whitespace
-// collapsing. "SI" is included without an accent because an accented "SÍ" collapses to
-// it and an unaccented "SI" is a legitimate typo of the same answer.
-//
-// Tradeoff: "OK" and "SI" are short enough to appear incidentally in an unrelated
-// message, which would record a consent nobody meant to give. They are kept because
-// the cost of that mistake is one row that a DELETE revokes, while the cost of NOT
-// recognizing a plainly consenting sender is that they are stuck on the deterministic
-// path with no way to explain why. Deliberately absent: "hola", which must stay an
-// ordinary greeting, and any free-text form, because a consent prompt that accepts
-// anything is not consent.
-export const OPT_IN_TOKENS: readonly string[] = ['QUIERO', 'SI', 'ACCEPTO', 'OK', 'DE ACUERDO'];
+// The only opt-in word, compared after uppercasing, accent stripping and whitespace
+// collapsing. Health data needs explicit consent, so a short reply that can appear
+// incidentally ("ok", "si") must never count as one, and the consent text names this
+// exact word.
+export const OPT_IN_TOKENS: readonly string[] = ['ACEPTO'];
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -69,19 +63,22 @@ export const OPT_IN_TOKENS: readonly string[] = ['QUIERO', 'SI', 'ACCEPTO', 'OK'
 // user-facing string and deliberately not a generated answer.
 // ---------------------------------------------------------------------------
 
-export const CONSENT_REQUEST =
-  'Para responderte consultas abiertas y recordar esta conversación necesito tu consentimiento. Respondé QUIERO para aceptarlo. Mientras tanto podés consultarme por precios, horarios, ubicación y cómo agendar una cita.';
+// Served when no consent policy is published: nobody can consent, so the sender is
+// told what the bot can still answer instead of being asked for a consent it cannot
+// record.
+export const CONSENT_UNAVAILABLE_NOTICE =
+  'Por ahora solo puedo responder consultas sobre precios, horarios, ubicación y cómo agendar una cita.';
 
 export const RATE_LIMIT_RESPONSE =
   'Recibí demasiados mensajes en la última hora. Por favor, intenta de nuevo más tarde. Si necesitas hablar con tu psicólogo/a, comunícate directamente.';
 
 export const OPT_IN_CONFIRMED_NOTICE =
-  'Perfecto, registré tu consentimiento. Ya puedo responderte consultas abiertas y recordar esta conversación.';
+  'Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee.';
 
 // Served instead of the confirmation when the consent write failed, so the sender is
 // never told a consent that was not stored and cannot tell that apart from being ignored.
 export const OPT_IN_FAILED_NOTICE =
-  'No pude registrar tu consentimiento en este momento. Por favor intentá de nuevo en un rato.';
+  'No pude registrar tu autorización en este momento. Por favor, intenta de nuevo más tarde.';
 
 // Served to a CONSENTED sender when the rate-limit counter could not be read or
 // written. For a consented sender the counter is the only per-sender ceiling on Claude
@@ -119,13 +116,15 @@ export type GateDecision =
   | { outcome: 'degraded'; response: string };
 
 export interface GateDependencies {
-  hasSenderConsent: typeof hasSenderConsent;
+  getSenderConsentState: typeof getSenderConsentState;
+  recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
 const defaultDependencies: GateDependencies = {
-  hasSenderConsent,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
   consumeRateLimitSlot,
 };
@@ -167,13 +166,23 @@ export function rateLimitWindowStart(now: number = Date.now()): string {
   return new Date(Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS).toISOString();
 }
 
-/** The deterministic answer, or the greeting, followed by the explicit consent request. */
-function limitedResponse(cleanMessage: string, psicologo: Psicologo): string {
+/** The full consent text of a policy, rendered for this psychologist, with its link. */
+export function renderConsentRequest(policy: ConsentPolicy, psicologo: Psicologo): string {
+  const text = policy.texto.replaceAll('{profesional}', psicologo.nombre);
+  return `${text}\n\nPolítica de privacidad completa: ${policy.url}`;
+}
+
+/** The short reminder served once the full consent text has already been shown. */
+export function consentReminder(policy: ConsentPolicy): string {
+  return `Para que pueda responder consultas abiertas, responde ACEPTO. Antes, revisa la política de privacidad: ${policy.url}`;
+}
+
+/** The deterministic answer, or the greeting, when nothing deterministic matched. */
+function deterministicAnswer(cleanMessage: string, psicologo: Psicologo): string {
   // A message with no deterministic match, and an empty message, both land on the
   // greeting: it names exactly what the sender may ask about, which is the listing
   // information a prospective patient needs, and it makes no Claude call.
-  const base = routeDeterministicMessage(cleanMessage, psicologo) ?? greetingResponse(psicologo);
-  return `${base.contenido}\n\n${CONSENT_REQUEST}`;
+  return (routeDeterministicMessage(cleanMessage, psicologo) ?? greetingResponse(psicologo)).contenido;
 }
 
 /**
@@ -188,18 +197,22 @@ function limitedResponse(cleanMessage: string, psicologo: Psicologo): string {
  *                   never consult two different identities for one sender.
  * @param psicologo  The resolved profile, used for the reply copy and as the tenant
  *                   that consent and the rate limit are scoped to.
+ * @param wamid      The inbound message id, recorded with every consent decision so it
+ *                   can be traced to the message that carried it.
  */
 export async function evaluateGate(
   rawText: string,
   senderNumber: string,
   psicologo: Psicologo,
+  wamid: string,
   dependencies: GateDependencies = defaultDependencies
 ): Promise<GateDecision> {
   const cleanMessage = sanitizeInput(rawText);
 
   // One identity for consent and for the rate limit, both scoped to this psychologist.
   const senderKey = normalizePhoneNumber(senderNumber);
-  const consented = await dependencies.hasSenderConsent(psicologo.id, senderKey);
+  const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
+  const { consented, policy } = consentState;
 
   // 1. Rate limit. The ceiling depends on consent state, so consent is resolved first
   //    even though deciding to charge a slot is not what makes a sender "consented".
@@ -232,22 +245,29 @@ export async function evaluateGate(
     return { outcome: 'rate_limited', response: RATE_LIMIT_RESPONSE };
   }
 
-  // 2. Consented: the full existing pipeline, unchanged.
+  // 2. Consented to the policy in force: the full existing pipeline, unchanged.
   if (consented) {
     return { outcome: 'allow', reason: 'consented' };
   }
 
-  // 3. Explicit opt-in. Consent is recorded, then confirmed with the greeting. No
-  //    Claude call and no conversation row: the greeting is fully self-contained, so
-  //    nothing is lost by not persisting the token that granted consent.
+  const answer = deterministicAnswer(cleanMessage, psicologo);
+
+  // 3. No published policy: nobody can consent, so no consent is requested either.
+  if (!policy) {
+    return { outcome: 'limited', response: `${answer}\n\n${CONSENT_UNAVAILABLE_NOTICE}` };
+  }
+
+  // 4. Explicit opt-in, honored only after the sender was shown THIS policy's text.
+  //    Consent to a text nobody saw is not informed, so an ACEPTO that arrives first
+  //    gets the full text instead. No Claude call and no conversation row.
   //
   //    The write result decides the reply: a failed write reports as `limited` with an
   //    honest reason, never a confirmation that did not happen.
-  if (isOptInToken(cleanMessage)) {
-    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey))) {
+  if (isOptInToken(cleanMessage) && consentState.promptShown) {
+    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey, policy.version, wamid))) {
       return {
         outcome: 'limited',
-        response: `${OPT_IN_FAILED_NOTICE}\n\n${CONSENT_REQUEST}`,
+        response: `${OPT_IN_FAILED_NOTICE}\n\n${consentReminder(policy)}`,
       };
     }
     return {
@@ -256,7 +276,16 @@ export async function evaluateGate(
     };
   }
 
-  // 4. Unconsented and not opting in: the deterministic answer plus the consent
-  //    request. No Claude, no history, no conversation row.
-  return { outcome: 'limited', response: limitedResponse(cleanMessage, psicologo) };
+  // 5. Unconsented: the deterministic answer plus the consent request. The full text
+  //    the first time for this policy, a short reminder after that. No Claude, no
+  //    history, no conversation row. A failed prompt record only means the full text
+  //    is shown again next time, so it never changes the reply.
+  if (consentState.promptShown) {
+    return { outcome: 'limited', response: `${answer}\n\n${consentReminder(policy)}` };
+  }
+  await dependencies.recordConsentPromptShown(psicologo.id, senderKey, policy.version, wamid);
+  return {
+    outcome: 'limited',
+    response: `${answer}\n\n${renderConsentRequest(policy, psicologo)}`,
+  };
 }

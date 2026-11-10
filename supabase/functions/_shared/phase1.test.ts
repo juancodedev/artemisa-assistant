@@ -16,8 +16,9 @@ import {
   getBoundedHistory,
   getOrCreateConversacion,
   getPsicologo,
-  hasSenderConsent,
+  getSenderConsentState,
   markDeliveryUncertain,
+  recordConsentPromptShown,
   recordSenderConsent,
   selectPsicologoFromRows,
 } from './supabase.ts';
@@ -34,18 +35,20 @@ import {
   routeMessage,
 } from './router.ts';
 import {
-  CONSENT_REQUEST,
+  CONSENT_UNAVAILABLE_NOTICE,
   DEGRADED_SERVICE_RESPONSE,
   OPT_IN_CONFIRMED_NOTICE,
   OPT_IN_FAILED_NOTICE,
   RATE_LIMIT_RESPONSE,
+  consentReminder,
   evaluateGate,
   isOptInToken,
+  renderConsentRequest,
 } from './gate.ts';
 import { isCrisisSignal } from './validation.ts';
 import { handleSendMessage } from '../send-message/handler.ts';
 import { handleWebhook, type WebhookDependencies } from '../webhook/index.ts';
-import type { MensajeHistoria, Psicologo } from './types.ts';
+import type { ConsentPolicy, MensajeHistoria, Psicologo, SenderConsentState } from './types.ts';
 
 const profile: Psicologo = {
   id: 'profile-1',
@@ -60,6 +63,22 @@ const profile: Psicologo = {
   link_calcom: 'https://cal.com/example/profile',
   horarios: null,
 };
+
+const testPolicy: ConsentPolicy = {
+  version: 'test-v1',
+  texto: 'Responsable: {profesional}. Este canal es automático. Si estás de acuerdo, responde ACEPTO.',
+  url: 'https://example.test/privacidad',
+};
+
+/** A getSenderConsentState stub for one fixed consent state. */
+function consentState(
+  consented: boolean,
+  promptShown = consented,
+  policy: ConsentPolicy | null = testPolicy
+): WebhookDependencies['getSenderConsentState'] {
+  const state: SenderConsentState = { policy, consented, promptShown };
+  return (async () => state) as unknown as WebhookDependencies['getSenderConsentState'];
+}
 
 async function createSignature(body: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -323,79 +342,6 @@ function createConversacionesStub(statements: StubStatement[]): SupabaseClient {
           const matched = applyStubFilters([...rows.values()], statement);
           if (matched.length !== 1) return { data: null, error: { code: 'PGRST116' } };
           return { data: matched[0], error: null };
-        },
-      };
-      return query;
-    },
-  } as unknown as SupabaseClient;
-}
-
-/**
- * Stubs sender_consents with the unique (psicologo_id, numero_remitente) behavior the
- * migration 006 constraint provides, and records every statement so a test can prove
- * the idempotent opt-in is one upsert and that its payload carries nothing but the
- * conflict target.
- */
-function createSenderConsentsStub(statements: StubStatement[]): SupabaseClient {
-  const rows = new Map<string, Record<string, unknown>>();
-
-  return {
-    from(table: string) {
-      const statement: StubStatement = {
-        kind: 'select',
-        table,
-        filters: [],
-        limit: null,
-        payload: null,
-      };
-      const query = {
-        upsert(
-          payload: Record<string, unknown>,
-          options?: { onConflict?: string }
-        ) {
-          statement.kind = 'upsert';
-          statement.payload = payload;
-          statement.onConflict = options?.onConflict;
-          return query;
-        },
-        select() {
-          return query;
-        },
-        eq(column: string, value: unknown) {
-          statement.filters.push([column, value]);
-          return query;
-        },
-        limit(value: number) {
-          statement.limit = value;
-          return query;
-        },
-        async maybeSingle() {
-          statements.push(statement);
-          if (statement.kind === 'upsert') {
-            const key = `${statement.payload?.psicologo_id}|${statement.payload?.numero_remitente}`;
-            const existing = rows.get(key);
-            if (existing) {
-              // DO UPDATE SET only touches the columns present in the payload, which is
-              // what keeps a repeat opt-in from restating opted_in_at.
-              const merged = { ...existing, ...statement.payload };
-              rows.set(key, merged);
-              return { data: merged, error: null };
-            }
-            const timestamp = new Date().toISOString();
-            const created = {
-              opted_in_at: timestamp,
-              origen: 'whatsapp_optin',
-              created_at: timestamp,
-              ...statement.payload,
-            };
-            rows.set(key, created);
-            return { data: created, error: null };
-          }
-
-          const matched = applyStubFilters([...rows.values()], statement);
-          // maybeSingle resolves null for zero rows and errors for more than one.
-          if (matched.length > 1) return { data: null, error: { code: 'PGRST117' } };
-          return { data: matched[0] ?? null, error: null };
         },
       };
       return query;
@@ -848,7 +794,8 @@ function createWebhookDependencies(
     // The real evaluateGate runs here on purpose; only its data access is stubbed, so
     // those tests exercise the real decision order rather than a pinned decision.
     evaluateGate,
-    hasSenderConsent: (async () => true) as unknown as WebhookDependencies['hasSenderConsent'],
+    getSenderConsentState: consentState(true),
+    recordConsentPromptShown: (async () => true) as unknown as WebhookDependencies['recordConsentPromptShown'],
     recordSenderConsent: (async () => true) as unknown as WebhookDependencies['recordSenderConsent'],
     consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
     ...overrides,
@@ -1296,7 +1243,11 @@ function createGateProbe() {
     get persistedConversations() {
       return persistedConversations;
     },
-    overrides(consented: boolean, slotCount: number | null = 1): Partial<WebhookDependencies> {
+    overrides(
+      consented: boolean,
+      slotCount: number | null = 1,
+      promptShown = false
+    ): Partial<WebhookDependencies> {
       return {
         sendMessage: (async (_to: string, text: string) => {
           sentTexts.push(text);
@@ -1329,7 +1280,7 @@ function createGateProbe() {
           completedWamids.push(wamid);
           return true;
         }) as unknown as WebhookDependencies['completeIncomingMessage'],
-        hasSenderConsent: (async () => consented) as unknown as WebhookDependencies['hasSenderConsent'],
+        getSenderConsentState: consentState(consented, promptShown),
         consumeRateLimitSlot: (async () =>
           slotCount) as unknown as WebhookDependencies['consumeRateLimitSlot'],
       };
@@ -1357,7 +1308,7 @@ Deno.test('keeps a non-consented sender away from Claude and away from stored hi
   // A free-form question has no deterministic answer, so the greeting plus the explicit
   // consent request is what the sender is told.
   assert.ok(probe.sentTexts[0].includes(greetingResponse(profile).contenido));
-  assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
+  assert.ok(probe.sentTexts[0].includes(renderConsentRequest(testPolicy, profile)));
 });
 
 Deno.test('answers listing questions for a non-consented sender and asks for consent', async () => {
@@ -1386,8 +1337,8 @@ Deno.test('answers listing questions for a non-consented sender and asks for con
       );
     }
     // Every listing answer still carries the explicit consent request.
-    assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
-    assert.ok(probe.sentTexts[0].includes('QUIERO'));
+    assert.ok(probe.sentTexts[0].includes(renderConsentRequest(testPolicy, profile)));
+    assert.ok(probe.sentTexts[0].includes('ACEPTO'));
     assert.equal(probe.claudeCalls, 0);
     assert.equal(probe.persistedConversations, 0);
     assert.equal(probe.conversationLookups, 0);
@@ -1400,10 +1351,10 @@ Deno.test('answers a crisis signal from a non-consented rate-limited sender with
   let slotConsumptions = 0;
   const sentTexts: string[] = [];
   const dependencies = createWebhookDependencies({
-    hasSenderConsent: (async () => {
+    getSenderConsentState: (async () => {
       consentChecks += 1;
-      return false;
-    }) as unknown as WebhookDependencies['hasSenderConsent'],
+      return { policy: testPolicy, consented: false, promptShown: false };
+    }) as unknown as WebhookDependencies['getSenderConsentState'],
     // Far above both ceilings, so this sender is rate limited in either consent state.
     consumeRateLimitSlot: (async () => {
       slotConsumptions += 1;
@@ -1512,25 +1463,31 @@ Deno.test('traverses the existing pipeline unchanged for a consented sender', as
 Deno.test('confirms an opt-in token without Claude, without a conversation row, and without retrying', async () => {
   Deno.env.set('META_APP_SECRET', 'test-app-secret');
   const probe = createGateProbe();
-  let recordedFor: Array<[string, string]> = [];
+  const recordedFor: Array<[string, string, string, string]> = [];
   const dependencies = createWebhookDependencies({
-    ...probe.overrides(false),
-    recordSenderConsent: (async (psicologoId: string, senderNumber: string) => {
-      recordedFor.push([psicologoId, senderNumber]);
+    ...probe.overrides(false, 1, true),
+    recordSenderConsent: (async (
+      psicologoId: string,
+      senderNumber: string,
+      policyVersion: string,
+      wamid: string
+    ) => {
+      recordedFor.push([psicologoId, senderNumber, policyVersion, wamid]);
       return true;
     }) as unknown as WebhookDependencies['recordSenderConsent'],
   });
 
   const response = await handleWebhook(
-    await buildWebhookRequest('QUIERO', 'wamid-optin'),
+    await buildWebhookRequest('ACEPTO', 'wamid-optin'),
     dependencies
   );
 
   assert.equal(response.status, 200);
-  // Consent is scoped to the resolved psychologist and the normalized sender number.
-  assert.deepEqual(recordedFor, [[profile.id, '+111']]);
+  // Consent is scoped to the psychologist and the normalized sender, and records the
+  // accepted policy version and the message that carried it.
+  assert.deepEqual(recordedFor, [[profile.id, '+111', testPolicy.version, 'wamid-optin']]);
   assert.equal(probe.sentTexts.length, 1);
-  assert.ok(probe.sentTexts[0].includes('Perfecto, registré tu consentimiento.'));
+  assert.ok(probe.sentTexts[0].includes(OPT_IN_CONFIRMED_NOTICE));
   assert.ok(probe.sentTexts[0].includes(greetingResponse(profile).contenido));
   // No Claude, no conversation row, and completed so Meta never redelivers the token.
   assert.equal(probe.claudeCalls, 0);
@@ -1543,13 +1500,13 @@ Deno.test('never confirms an opt-in whose consent write failed', async () => {
   Deno.env.set('META_APP_SECRET', 'test-app-secret');
   const probe = createGateProbe();
   const dependencies = createWebhookDependencies({
-    ...probe.overrides(false),
+    ...probe.overrides(false, 1, true),
     recordSenderConsent: (async () =>
       false) as unknown as WebhookDependencies['recordSenderConsent'],
   });
 
   const response = await handleWebhook(
-    await buildWebhookRequest('QUIERO', 'wamid-optin-write-failed'),
+    await buildWebhookRequest('ACEPTO', 'wamid-optin-write-failed'),
     dependencies
   );
 
@@ -1558,7 +1515,7 @@ Deno.test('never confirms an opt-in whose consent write failed', async () => {
   assert.equal(probe.sentTexts[0].includes(OPT_IN_CONFIRMED_NOTICE), false);
   assert.ok(probe.sentTexts[0].includes(OPT_IN_FAILED_NOTICE));
   // The consent request is repeated, so the retry is actionable.
-  assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
+  assert.ok(probe.sentTexts[0].includes(consentReminder(testPolicy)));
   assert.equal(probe.claudeCalls, 0);
   assert.deepEqual(probe.completedWamids, ['wamid-optin-write-failed']);
 });
@@ -1581,54 +1538,168 @@ Deno.test('sends the over-limit text and completes instead of asking Meta to ret
   assert.equal(probe.conversationLookups, 0);
 });
 
-Deno.test('scopes sender consent per psychologist and sender number', async () => {
-  const statements: StubStatement[] = [];
-  const client = createSenderConsentsStub(statements);
+Deno.test('reads the consent state in one round trip and fails closed', async () => {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  const rpcClient = (result: { data: unknown; error: unknown }) => ({
+    rpc: async (name: string, params: Record<string, unknown>) => {
+      calls.push([name, params]);
+      return result;
+    },
+  } as unknown as SupabaseClient);
 
-  assert.equal(await hasSenderConsent('profile-1', '+111', client), false);
+  const consented = await getSenderConsentState('profile-1', '+111', rpcClient({
+    data: [{
+      policy_version: 'v1',
+      policy_texto: 'Texto',
+      politica_url: 'https://example.test/p',
+      consented: true,
+      prompt_shown: true,
+    }],
+    error: null,
+  }));
+  assert.deepEqual(consented, {
+    policy: { version: 'v1', texto: 'Texto', url: 'https://example.test/p' },
+    consented: true,
+    promptShown: true,
+  });
+  assert.deepEqual(calls[0], [
+    'get_sender_consent_state',
+    { p_psicologo_id: 'profile-1', p_numero_remitente: '+111' },
+  ]);
 
-  assert.equal(await recordSenderConsent('profile-1', '+111', client), true);
-  // Opting in twice is one idempotent upsert against the unique constraint, not two rows.
-  assert.equal(await recordSenderConsent('profile-1', '+111', client), true);
-  assert.equal(await hasSenderConsent('profile-1', '+111', client), true);
-
-  // Consent is per psychologist: the same number is still unconsented elsewhere.
-  assert.equal(await hasSenderConsent('profile-2', '+111', client), false);
-  assert.equal(await recordSenderConsent('profile-2', '+111', client), true);
-  assert.equal(await hasSenderConsent('profile-1', '+111', client), true);
-  assert.equal(await hasSenderConsent('profile-2', '+111', client), true);
-
-  // And per sender: a second number is unconsented for the first psychologist.
-  assert.equal(await hasSenderConsent('profile-1', '+222', client), false);
-
-  const upserts = statements.filter((statement) => statement.kind === 'upsert');
-  assert.equal(upserts.length, 3);
-  // ON CONFLICT needs a real constraint, so the target must be the unique one.
-  assert.equal(upserts[0].onConflict, 'psicologo_id,numero_remitente');
-  // The payload carries only the conflict target. opted_in_at absent is what stops a
-  // repeat opt-in from restating when consent was first given.
-  assert.deepEqual(upserts[0].payload, { psicologo_id: 'profile-1', numero_remitente: '+111' });
-  assert.equal('opted_in_at' in (upserts[0].payload ?? {}), false);
-  assert.equal('origen' in (upserts[0].payload ?? {}), false);
-  assert.equal('created_at' in (upserts[0].payload ?? {}), false);
+  const unknownState = { policy: null, consented: false, promptShown: false };
+  // No published policy is no row at all.
+  assert.deepEqual(await getSenderConsentState('profile-1', '+111', rpcClient({ data: [], error: null })), unknownState);
+  // A database error must never be read as consent.
+  assert.deepEqual(
+    await getSenderConsentState('profile-1', '+111', rpcClient({ data: null, error: { code: 'DB_ERROR' } })),
+    unknownState
+  );
+  const throwing = { rpc: async () => { throw new Error('down'); } } as unknown as SupabaseClient;
+  assert.deepEqual(await getSenderConsentState('profile-1', '+111', throwing), unknownState);
 });
 
-Deno.test('fails closed to "no consent" when the consent lookup errors', async () => {
+Deno.test('appends consent decisions and records the shown prompt idempotently', async () => {
+  const writes: Array<{ table: string; kind: string; payload: unknown; options?: unknown }> = [];
+  let failWrites = false;
   const client = {
-    from() {
-      const query = {
-        select: () => query,
-        eq: () => query,
-        maybeSingle: async () => ({ data: null, error: { code: 'DB_ERROR' } }),
+    from(table: string) {
+      return {
+        insert: async (payload: unknown) => {
+          writes.push({ table, kind: 'insert', payload });
+          return { error: failWrites ? { code: 'DB_ERROR' } : null };
+        },
+        upsert: async (payload: unknown, options: unknown) => {
+          writes.push({ table, kind: 'upsert', payload, options });
+          return { error: failWrites ? { code: 'DB_ERROR' } : null };
+        },
       };
-      return query;
     },
   } as unknown as SupabaseClient;
 
-  // A database error must not be read as consent, which would put an unconsented
-  // sender straight onto the paid path.
-  assert.equal(await hasSenderConsent('profile-1', '+111', client), false);
-  assert.equal(await recordSenderConsent('profile-1', '+111', client), false);
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'wamid-1', client), true);
+  assert.equal(await recordConsentPromptShown('profile-1', '+111', 'v1', 'wamid-0', client), true);
+
+  // A consent is a new row in the append-only log, never an upsert that rewrites one.
+  assert.deepEqual(writes[0], {
+    table: 'consent_events',
+    kind: 'insert',
+    payload: {
+      psicologo_id: 'profile-1',
+      numero_remitente: '+111',
+      evento: 'granted',
+      policy_version: 'v1',
+      wamid: 'wamid-1',
+      origen: 'whatsapp_acepto',
+    },
+  });
+  // The first showing is kept: a repeat is ignored, not an update of shown_at.
+  assert.deepEqual(writes[1], {
+    table: 'consent_prompts',
+    kind: 'upsert',
+    payload: { psicologo_id: 'profile-1', numero_remitente: '+111', policy_version: 'v1', wamid: 'wamid-0' },
+    options: { onConflict: 'psicologo_id,numero_remitente,policy_version', ignoreDuplicates: true },
+  });
+
+  failWrites = true;
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'wamid-2', client), false);
+  assert.equal(await recordConsentPromptShown('profile-1', '+111', 'v1', 'wamid-3', client), false);
+});
+
+Deno.test('shows the full consent text before honoring ACEPTO', async () => {
+  const prompts: Array<[string, string, string, string]> = [];
+  let grants = 0;
+  const dependencies = (promptShown: boolean, policy: ConsentPolicy | null = testPolicy) => ({
+    getSenderConsentState: consentState(false, promptShown, policy),
+    recordConsentPromptShown: (async (a: string, b: string, c: string, d: string) => {
+      prompts.push([a, b, c, d]);
+      return true;
+    }) as unknown as WebhookDependencies['recordConsentPromptShown'],
+    recordSenderConsent: (async () => {
+      grants += 1;
+      return true;
+    }) as unknown as WebhookDependencies['recordSenderConsent'],
+    consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
+  });
+
+  // An ACEPTO that arrives before the text was ever shown is not informed consent.
+  const early = await evaluateGate('ACEPTO', '+111', profile, 'wamid-early', dependencies(false));
+  assert.equal(early.outcome, 'limited');
+  assert.ok(early.outcome === 'limited' && early.response.includes(renderConsentRequest(testPolicy, profile)));
+  assert.equal(grants, 0);
+  assert.deepEqual(prompts, [[profile.id, '+111', testPolicy.version, 'wamid-early']]);
+
+  // The rendered text names the professional and links the full policy.
+  const rendered = renderConsentRequest(testPolicy, profile);
+  assert.ok(rendered.includes(`Responsable: ${profile.nombre}.`));
+  assert.equal(rendered.includes('{profesional}'), false);
+  assert.ok(rendered.includes(testPolicy.url));
+
+  // Once shown, the full text is not repeated: a short reminder follows the answer.
+  const later = await evaluateGate('¿Cuál es el precio?', '+111', profile, 'wamid-later', dependencies(true));
+  assert.ok(later.outcome === 'limited' && later.response.includes(consentReminder(testPolicy)));
+  assert.ok(later.outcome === 'limited' && later.response.includes(profile.precio));
+  assert.equal(prompts.length, 1);
+
+  // And then ACEPTO is honored.
+  const accepted = await evaluateGate('acepto', '+111', profile, 'wamid-accept', dependencies(true));
+  assert.equal(accepted.outcome, 'optin_confirmed');
+  assert.equal(grants, 1);
+});
+
+Deno.test('asks for no consent while no policy is published', async () => {
+  let writes = 0;
+  const dependencies = {
+    getSenderConsentState: consentState(false, false, null),
+    recordConsentPromptShown: (async () => {
+      writes += 1;
+      return true;
+    }) as unknown as WebhookDependencies['recordConsentPromptShown'],
+    recordSenderConsent: (async () => {
+      writes += 1;
+      return true;
+    }) as unknown as WebhookDependencies['recordSenderConsent'],
+    consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
+  };
+
+  for (const text of ['¿Cuál es el precio?', 'ACEPTO']) {
+    const decision = await evaluateGate(text, '+111', profile, 'wamid-no-policy', dependencies);
+    assert.equal(decision.outcome, 'limited', text);
+    assert.ok(decision.outcome === 'limited' && decision.response.includes(CONSENT_UNAVAILABLE_NOTICE), text);
+    assert.ok(decision.outcome === 'limited' && !decision.response.includes('ACEPTO'), text);
+  }
+  assert.equal(writes, 0);
+});
+
+Deno.test('writes the consent replies in neutral Spanish', () => {
+  for (const text of [
+    OPT_IN_CONFIRMED_NOTICE,
+    OPT_IN_FAILED_NOTICE,
+    CONSENT_UNAVAILABLE_NOTICE,
+    consentReminder(testPolicy),
+  ]) {
+    assertNeutralWithoutPromise(text, text);
+  }
 });
 
 Deno.test('consumes one rate-limit slot per message in the same window', async () => {
@@ -1684,7 +1755,7 @@ Deno.test('fails open on a rate-limit outage but still gates an unconsented send
   assert.equal(response.status, 200);
   assert.equal(probe.sentTexts.length, 1);
   assert.ok(probe.sentTexts[0].includes(profile.precio));
-  assert.ok(probe.sentTexts[0].includes(CONSENT_REQUEST));
+  assert.ok(probe.sentTexts[0].includes(renderConsentRequest(testPolicy, profile)));
   assert.equal(probe.claudeCalls, 0);
   assert.equal(probe.conversationLookups, 0);
 });
@@ -1713,9 +1784,10 @@ Deno.test('pauses a consented sender when the rate-limit counter is unavailable'
 Deno.test('keeps failing open for an unconsented sender when the counter is unavailable', async () => {
   Deno.env.set('META_APP_SECRET', 'test-app-secret');
   // The mirror image: this path costs no Claude call, so failing open costs nothing.
-  const decision = await evaluateGate('¿Cuál es el precio?', '+111', profile, {
-    hasSenderConsent: (async () =>
-      false) as unknown as WebhookDependencies['hasSenderConsent'],
+  const decision = await evaluateGate('¿Cuál es el precio?', '+111', profile, 'wamid-gate', {
+    getSenderConsentState: consentState(false),
+    recordConsentPromptShown: (async () =>
+      true) as unknown as WebhookDependencies['recordConsentPromptShown'],
     recordSenderConsent: (async () =>
       true) as unknown as WebhookDependencies['recordSenderConsent'],
     consumeRateLimitSlot: (async () =>
@@ -1726,12 +1798,12 @@ Deno.test('keeps failing open for an unconsented sender when the counter is unav
 });
 
 Deno.test('matches opt-in tokens across case, accents, and repeated whitespace', () => {
-  for (const token of ['QUIERO', 'quiero', 'Quiero', 'SÍ', 'sí', 'si', 'ACCEPTO', 'ok', 'De acuerdo', '  DE   ACUERDO  ']) {
+  for (const token of ['ACEPTO', 'acepto', 'Acepto', 'ACEPTÓ', '  acepto  ']) {
     assert.equal(isOptInToken(token), true, `expected ${JSON.stringify(token)} to opt in`);
   }
-  // 'hola' must stay an ordinary greeting, and a free-text message that merely contains
-  // a token is not consent.
-  for (const message of ['', 'Hola', 'quiero saber el precio', 'no quiero', 'deseo']) {
+  // Only the exact word counts: short replies that appear incidentally, the old tokens,
+  // and a free-text message that merely contains the word are not consent.
+  for (const message of ['', 'Hola', 'QUIERO', 'si', 'sí', 'ok', 'De acuerdo', 'ACCEPTO', 'acepto el precio', 'no acepto']) {
     assert.equal(isOptInToken(message), false, `expected ${JSON.stringify(message)} not to opt in`);
   }
 });
@@ -1771,13 +1843,14 @@ Deno.test('keeps routeMessage precedence and serves the greeting for an empty me
 
 Deno.test('decides the gate order independently of the webhook', async () => {
   const dependencies = {
-    hasSenderConsent: (async () => false) as unknown as WebhookDependencies['hasSenderConsent'],
+    getSenderConsentState: consentState(false, true),
+    recordConsentPromptShown: (async () => true) as unknown as WebhookDependencies['recordConsentPromptShown'],
     recordSenderConsent: (async () => true) as unknown as WebhookDependencies['recordSenderConsent'],
     consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
   };
 
   // 1. Rate limit, with a distinct ceiling per consent state.
-  const overLimit = await evaluateGate('Hola', '+111', profile, {
+  const overLimit = await evaluateGate('Hola', '+111', profile, 'wamid-gate', {
     ...dependencies,
     consumeRateLimitSlot: (async () => 11) as unknown as WebhookDependencies['consumeRateLimitSlot'],
   });
@@ -1786,17 +1859,17 @@ Deno.test('decides the gate order independently of the webhook', async () => {
   // 2. Consented, on the full path. 11 is over the unconsented ceiling but under the
   // consented one, which is the only thing the two ceilings differ on.
   assert.deepEqual(
-    await evaluateGate('Hola', '+111', profile, {
+    await evaluateGate('Hola', '+111', profile, 'wamid-gate', {
       ...dependencies,
-      hasSenderConsent: (async () => true) as unknown as WebhookDependencies['hasSenderConsent'],
+      getSenderConsentState: consentState(true),
       consumeRateLimitSlot: (async () => 11) as unknown as WebhookDependencies['consumeRateLimitSlot'],
     }),
     { outcome: 'allow', reason: 'consented' }
   );
 
   // 3. Opt-in token, and 4. everything else.
-  const optIn = await evaluateGate('quiero', '+111', profile, dependencies);
+  const optIn = await evaluateGate('acepto', '+111', profile, 'wamid-gate', dependencies);
   assert.equal(optIn.outcome, 'optin_confirmed');
-  const limited = await evaluateGate('Hola', '+111', profile, dependencies);
+  const limited = await evaluateGate('Hola', '+111', profile, 'wamid-gate', dependencies);
   assert.equal(limited.outcome, 'limited');
 });
