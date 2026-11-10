@@ -192,7 +192,8 @@ values ('00000000-0000-0000-0000-0000000000a1', '+555', 'test-v2', 'w-prompt-555
 insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
 values ('00000000-0000-0000-0000-0000000000a1', '+555', 'granted', 'test-v2', 'w-grant-555', 'whatsapp_acepto');
 insert into public.sender_rate_buckets (psicologo_id, numero_remitente, window_started_at, message_count)
-values ('00000000-0000-0000-0000-0000000000a1', '+555', date_trunc('hour', now()), 3);
+values ('00000000-0000-0000-0000-0000000000a1', '+555', date_trunc('hour', now()), 3),
+       ('00000000-0000-0000-0000-0000000000a1', '+555', date_trunc('hour', now()) - interval '3 hours', 2);
 insert into public.sender_consents (psicologo_id, numero_remitente)
 values ('00000000-0000-0000-0000-0000000000a1', '+555');
 
@@ -211,10 +212,14 @@ do $$
 begin
   if exists (select 1 from public.conversaciones where psicologo_id = '00000000-0000-0000-0000-0000000000a1' and numero_paciente = '+555')
     or exists (select 1 from public.consent_prompts where numero_remitente = '+555')
-    or exists (select 1 from public.sender_rate_buckets where numero_remitente = '+555')
+    or exists (select 1 from public.sender_rate_buckets where numero_remitente = '+555' and window_started_at < now() - interval '2 hours')
     or exists (select 1 from public.sender_consents where numero_remitente = '+555')
   then
     raise exception 'ELIMINAR left personal data behind';
+  end if;
+  -- The current counter is kept, so ELIMINAR cannot reset the rate limit.
+  if not exists (select 1 from public.sender_rate_buckets where numero_remitente = '+555' and window_started_at = date_trunc('hour', now())) then
+    raise exception 'ELIMINAR reset the current rate-limit counter';
   end if;
   -- Other psychologists and other senders are untouched.
   if (select count(*) from public.conversaciones where numero_paciente = '+555') <> 1

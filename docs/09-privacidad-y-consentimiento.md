@@ -46,13 +46,13 @@ No publiques la política antes de desplegar la migración 008 y la Edge Functio
 | Mensaje | Qué hace | Qué se conserva |
 |---|---|---|
 | `BAJA` | Agrega un evento `revoked` si había una autorización vigente | El historial, hasta `ELIMINAR` o hasta el borrado por retención |
-| `ELIMINAR` | Retira la autorización y borra la conversación, los avisos mostrados, los contadores y el consentimiento heredado de 006 | Solo `consent_events` |
+| `ELIMINAR` | Retira la autorización y borra la conversación, los avisos mostrados, los contadores de mensajes de más de dos horas y el consentimiento heredado de 006 | `consent_events`, y los contadores de las últimas dos horas para que `ELIMINAR` no reinicie el límite de mensajes (el borrado por retención los elimina en un día) |
 
 Las dos palabras se aceptan sin importar mayúsculas ni tildes, pero solas: "quiero darme de baja del plan" no cuenta. Se atienden antes del límite de mensajes y sin exigir consentimiento. Si la base falla, el bot lo dice y no confirma nada.
 
 ### Límites conocidos
 
-- Un mensaje que ya pasó el filtro justo antes de un `ELIMINAR` puede recrear una conversación vacía si llega a `getOrCreateConversacion` después del borrado. La ventana dura lo que tardan esas dos consultas; la respuesta de Claude que llega después no recrea nada, porque se guarda con un `update` por `id` sobre una fila que ya no existe. El borrado por retención elimina esa conversación.
+- Un mensaje que ya pasó el filtro antes de un `BAJA` o `ELIMINAR` vuelve a leer el consentimiento justo antes de guardar la respuesta, y no guarda nada si ya se retiró. Si llegó a `getOrCreateConversacion` después del borrado, puede quedar una conversación vacía, que el borrado por retención elimina. Queda una ventana de milisegundos entre esa última lectura y el guardado.
 - `BAJA` y `ELIMINAR` no consumen el límite de mensajes, a propósito: ejercer un derecho no puede depender de cuántos mensajes se enviaron. Repetirlos no tiene costo de Claude; cada uno hace consultas por índice y envía una respuesta.
 
 ## Retención

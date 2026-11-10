@@ -322,6 +322,17 @@ async function processMessage(
     );
     if (deliveryOutcome) return deliveryOutcome;
 
+    // Consent is read again right before storing: a BAJA or ELIMINAR that landed while
+    // this message was being answered must not be followed by a stored exchange. A
+    // failed re-read keeps the consent the gate already saw.
+    const consentNow = await dependencies.getSenderConsentState(
+      psicologo.id,
+      normalizePhoneNumber(message.from)
+    );
+    if (!consentNow.consented && !consentNow.lookupFailed) {
+      return markMessageCompleted(message.messageId, dependencies);
+    }
+
     const persisted = await dependencies.appendMessagesToConversacion(
       conversation.id,
       conversation.historial,

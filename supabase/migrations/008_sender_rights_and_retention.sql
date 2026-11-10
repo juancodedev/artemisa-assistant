@@ -97,8 +97,12 @@ begin
   delete from public.consent_prompts
   where psicologo_id = p_psicologo_id and numero_remitente = p_numero_remitente;
 
+  -- Counters from the last two hours are kept: erasing them would reset the rate limit
+  -- and let a sender cycle ELIMINAR and ACEPTO past it. The purge removes them within
+  -- a day.
   delete from public.sender_rate_buckets
-  where psicologo_id = p_psicologo_id and numero_remitente = p_numero_remitente;
+  where psicologo_id = p_psicologo_id and numero_remitente = p_numero_remitente
+    and window_started_at < pg_catalog.now() - interval '2 hours';
 
   -- Legacy consents from migration 006, no longer read but still personal data.
   delete from public.sender_consents
@@ -109,7 +113,7 @@ end;
 $$;
 
 comment on function public.erase_sender_data(uuid, text, text) is
-  'Withdraws consent and deletes the sender''s conversation, consent prompts, rate counters and legacy consent. The consent log is kept as proof.';
+  'Withdraws consent and deletes the sender''s conversation, consent prompts, rate counters older than two hours and legacy consent. The consent log is kept as proof.';
 
 -- 3. Retention purge. Deletes personal data older than p_retention:
 --    - conversations without activity in that time;

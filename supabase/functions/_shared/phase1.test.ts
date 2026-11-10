@@ -2066,3 +2066,46 @@ Deno.test('a failed prompt record still shows the full consent text', async () =
   assert.equal(decision.outcome, 'limited');
   assert.ok(decision.outcome === 'limited' && decision.response.includes(renderConsentRequest(testPolicy, profile)));
 });
+
+Deno.test('does not store an exchange when consent was withdrawn while it was answered', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  for (const [later, shouldPersist] of [
+    [{ policy: testPolicy, consented: false, promptShown: true, lookupFailed: false }, false],
+    // A failed re-read keeps the consent the gate already saw.
+    [{ policy: null, consented: false, promptShown: false, lookupFailed: true }, true],
+    [{ policy: testPolicy, consented: true, promptShown: true, lookupFailed: false }, true],
+  ] as const) {
+    let reads = 0;
+    let appends = 0;
+    const sent: string[] = [];
+    const completed: string[] = [];
+    const response = await handleWebhook(
+      await buildWebhookRequest('¿Cuál es el horario?', 'wamid-withdrawn'),
+      createWebhookDependencies({
+        // The gate sees consent; an ELIMINAR lands before the exchange is stored.
+        getSenderConsentState: (async () => {
+          reads += 1;
+          return reads === 1
+            ? { policy: testPolicy, consented: true, promptShown: true, lookupFailed: false }
+            : later;
+        }) as unknown as WebhookDependencies['getSenderConsentState'],
+        sendMessage: (async (_to: string, text: string) => {
+          sent.push(text);
+          return { success: true, delivery: 'delivered', messageId: 'sent' };
+        }) as unknown as WebhookDependencies['sendMessage'],
+        appendMessagesToConversacion: (async () => {
+          appends += 1;
+          return true;
+        }) as unknown as WebhookDependencies['appendMessagesToConversacion'],
+        completeIncomingMessage: (async (wamid: string) => {
+          completed.push(wamid);
+          return true;
+        }) as unknown as WebhookDependencies['completeIncomingMessage'],
+      })
+    );
+    assert.equal(response.status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(appends, shouldPersist ? 1 : 0, JSON.stringify(later));
+    assert.deepEqual(completed, ['wamid-withdrawn']);
+  }
+});
