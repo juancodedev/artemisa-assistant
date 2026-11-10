@@ -143,4 +143,160 @@ begin
   end if;
 end $$;
 
+-- 008: BAJA appends a revocation only when there is a consent to withdraw.
+set local role service_role;
+
+insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
+values ('00000000-0000-0000-0000-0000000000a1', '+444', 'granted', 'test-v2', 'w-grant-444', 'whatsapp_acepto');
+
+do $$
+declare state record;
+begin
+  if not public.revoke_sender_consent('00000000-0000-0000-0000-0000000000a1', '+444', 'w-baja-444') then
+    raise exception 'BAJA did not withdraw an existing consent';
+  end if;
+  -- A second BAJA has nothing left to withdraw and appends nothing.
+  if public.revoke_sender_consent('00000000-0000-0000-0000-0000000000a1', '+444', 'w-baja-444-bis') then
+    raise exception 'BAJA withdrew a consent twice';
+  end if;
+  if (select count(*) from public.consent_events where numero_remitente = '+444') <> 2 then
+    raise exception 'BAJA appended the wrong number of events';
+  end if;
+  if exists (
+    select 1 from public.consent_events
+    where numero_remitente = '+444' and evento = 'revoked'
+      and (policy_version <> 'test-v2' or wamid <> 'w-baja-444' or origen <> 'whatsapp_baja')
+  ) then
+    raise exception 'revocation did not record the withdrawn version, message and origin';
+  end if;
+  select * into state from public.get_sender_consent_state('00000000-0000-0000-0000-0000000000a1', '+444');
+  if state.consented then raise exception 'sender still consented after BAJA'; end if;
+  -- An unknown sender has nothing to withdraw.
+  if public.revoke_sender_consent('00000000-0000-0000-0000-0000000000a1', '+999', 'w') then
+    raise exception 'BAJA withdrew a consent that never existed';
+  end if;
+end $$;
+
+reset role;
+
+-- 008: ELIMINAR erases the sender's data for this psychologist only, keeps the log.
+insert into public.psicologos (id, nombre, numero_whatsapp, modalidad, direccion, precio, tipo_de_cita, link_calcom)
+values ('00000000-0000-0000-0000-0000000000a2', 'Otro', '+56900000002', 'Online', 'Calle 2', '$2', 'Sesión', 'https://cal.com/otro');
+
+insert into public.conversaciones (psicologo_id, numero_paciente, historial)
+values ('00000000-0000-0000-0000-0000000000a1', '+555', '[]'::jsonb),
+       ('00000000-0000-0000-0000-0000000000a2', '+555', '[]'::jsonb),
+       ('00000000-0000-0000-0000-0000000000a1', '+666', '[]'::jsonb);
+insert into public.consent_prompts (psicologo_id, numero_remitente, policy_version, wamid)
+values ('00000000-0000-0000-0000-0000000000a1', '+555', 'test-v2', 'w-prompt-555');
+insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
+values ('00000000-0000-0000-0000-0000000000a1', '+555', 'granted', 'test-v2', 'w-grant-555', 'whatsapp_acepto');
+insert into public.sender_rate_buckets (psicologo_id, numero_remitente, window_started_at, message_count)
+values ('00000000-0000-0000-0000-0000000000a1', '+555', date_trunc('hour', now()), 3);
+insert into public.sender_consents (psicologo_id, numero_remitente)
+values ('00000000-0000-0000-0000-0000000000a1', '+555');
+
+set local role service_role;
+
+do $$
+begin
+  if not public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+555', 'w-eliminar-555') then
+    raise exception 'ELIMINAR did not report the withdrawn consent';
+  end if;
+end $$;
+
+reset role;
+
+do $$
+begin
+  if exists (select 1 from public.conversaciones where psicologo_id = '00000000-0000-0000-0000-0000000000a1' and numero_paciente = '+555')
+    or exists (select 1 from public.consent_prompts where numero_remitente = '+555')
+    or exists (select 1 from public.sender_rate_buckets where numero_remitente = '+555')
+    or exists (select 1 from public.sender_consents where numero_remitente = '+555')
+  then
+    raise exception 'ELIMINAR left personal data behind';
+  end if;
+  -- Other psychologists and other senders are untouched.
+  if (select count(*) from public.conversaciones where numero_paciente = '+555') <> 1
+    or (select count(*) from public.conversaciones where numero_paciente = '+666') <> 1
+  then
+    raise exception 'ELIMINAR erased data of another psychologist or sender';
+  end if;
+  -- The proof is kept: the grant and the withdrawal.
+  if (select string_agg(evento || ':' || origen, ',' order by id) from public.consent_events where numero_remitente = '+555')
+    <> 'granted:whatsapp_acepto,revoked:whatsapp_eliminar'
+  then
+    raise exception 'ELIMINAR did not keep the consent log';
+  end if;
+end $$;
+
+-- 008: the purge deletes only what is older than the retention, never the log.
+insert into public.conversaciones (psicologo_id, numero_paciente, historial, ultima_actividad)
+values ('00000000-0000-0000-0000-0000000000a1', '+777', '[]'::jsonb, now() - interval '91 days'),
+       ('00000000-0000-0000-0000-0000000000a1', '+888', '[]'::jsonb, now() - interval '89 days');
+insert into public.consent_prompts (psicologo_id, numero_remitente, policy_version, wamid, shown_at)
+values ('00000000-0000-0000-0000-0000000000a1', '+777', 'test-v2', 'w-old', now() - interval '91 days');
+insert into public.mensajes_procesados (wamid, status, created_at)
+values ('w-processed-old', 'completed', now() - interval '91 days'),
+       ('w-processed-new', 'completed', now());
+insert into public.sender_rate_buckets (psicologo_id, numero_remitente, window_started_at, message_count)
+values ('00000000-0000-0000-0000-0000000000a1', '+777', now() - interval '2 days', 1);
+
+set local role service_role;
+
+do $$
+declare
+  purged record;
+  events_before bigint := (select count(*) from public.consent_events);
+begin
+  select * into purged from public.purge_expired_personal_data(interval '90 days');
+  if purged.conversaciones <> 1 or purged.consent_prompts <> 1
+    or purged.mensajes_procesados <> 1 or purged.sender_rate_buckets <> 1
+  then
+    raise exception 'purge counts wrong: %', purged;
+  end if;
+  if (select count(*) from public.consent_events) <> events_before then
+    raise exception 'purge touched the consent log';
+  end if;
+  begin
+    perform public.purge_expired_personal_data(interval '1 hour');
+    raise exception 'purge accepted a retention shorter than a day';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+
+reset role;
+
+-- Checked as the owner: on plain Postgres the service role holds no grant on these.
+do $$
+begin
+  if exists (select 1 from public.conversaciones where numero_paciente = '+777') then
+    raise exception 'expired conversation survived the purge';
+  end if;
+  if not exists (select 1 from public.conversaciones where numero_paciente = '+888') then
+    raise exception 'purge deleted a conversation inside the retention';
+  end if;
+  if not exists (select 1 from public.mensajes_procesados where wamid = 'w-processed-new') then
+    raise exception 'purge deleted a recent idempotency row';
+  end if;
+end $$;
+
+-- 008: the service role cannot write policies, and no client role reaches the functions.
+do $$
+begin
+  if has_table_privilege('service_role', 'public.consent_policies', 'insert')
+    or has_table_privilege('service_role', 'public.consent_policies', 'update')
+    or has_table_privilege('service_role', 'public.consent_policies', 'delete')
+  then
+    raise exception 'service role can write consent policies';
+  end if;
+  if has_function_privilege('anon', 'public.erase_sender_data(uuid, text, text)', 'execute')
+    or has_function_privilege('authenticated', 'public.erase_sender_data(uuid, text, text)', 'execute')
+    or has_function_privilege('anon', 'public.revoke_sender_consent(uuid, text, text, text)', 'execute')
+    or has_function_privilege('anon', 'public.purge_expired_personal_data(interval)', 'execute')
+  then
+    raise exception 'a client role can call a rights or retention function';
+  end if;
+end $$;
+
 rollback;

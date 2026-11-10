@@ -53,4 +53,6 @@ export interface SenderConsentState {
   policy: ConsentPolicy | null;
   consented: boolean;
   promptShown: boolean;
+  /** The state could not be read. Distinct from "no policy" so the reply can say so. */
+  lookupFailed: boolean;
 }

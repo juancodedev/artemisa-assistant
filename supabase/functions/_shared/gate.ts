@@ -1,5 +1,6 @@
 // supabase/functions/_shared/gate.ts
-// Sender admission gate: rate limiting and informed, versioned opt-in consent.
+// Sender admission gate: sender rights (BAJA, ELIMINAR), rate limiting, and informed,
+// versioned opt-in consent.
 //
 // The business number answers any sender that reaches it, so this module decides what
 // a given sender is allowed to cost before the webhook spends anything. It answers one
@@ -9,9 +10,11 @@
 import { greetingResponse, routeDeterministicMessage } from './router.ts';
 import {
   consumeRateLimitSlot,
+  eraseSenderData,
   getSenderConsentState,
   recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
 } from './supabase.ts';
 import { ConsentPolicy, Psicologo } from './types.ts';
 import { normalizePhoneNumber, sanitizeInput } from './validation.ts';
@@ -55,6 +58,10 @@ export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 // exact word.
 export const OPT_IN_TOKENS: readonly string[] = ['ACEPTO'];
 
+// Rights requests, matched the same way. They are the words the consent text names.
+export const REVOKE_TOKEN = 'BAJA';
+export const ERASE_TOKEN = 'ELIMINAR';
+
 // ---------------------------------------------------------------------------
 // Responses
 //
@@ -73,12 +80,31 @@ export const RATE_LIMIT_RESPONSE =
   'Recibí demasiados mensajes en la última hora. Por favor, intenta de nuevo más tarde. Si necesitas hablar con tu psicólogo/a, comunícate directamente.';
 
 export const OPT_IN_CONFIRMED_NOTICE =
-  'Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee.';
+  'Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee. Escribe BAJA para retirar tu autorización o ELIMINAR para borrar tu historial.';
 
 // Served instead of the confirmation when the consent write failed, so the sender is
 // never told a consent that was not stored and cannot tell that apart from being ignored.
 export const OPT_IN_FAILED_NOTICE =
   'No pude registrar tu autorización en este momento. Por favor, intenta de nuevo más tarde.';
+
+// Served when the consent state could not be read. The sender is kept on the
+// deterministic path, and told it is temporary rather than that consent is unavailable.
+export const CONSENT_CHECK_FAILED_NOTICE =
+  'No pude verificar tu autorización en este momento, así que por ahora solo puedo responder consultas sobre precios, horarios, ubicación y cómo agendar una cita. Por favor, intenta de nuevo más tarde.';
+
+export const REVOKED_NOTICE =
+  'Listo, retiré tu autorización. Ya no guardaré esta conversación ni responderé consultas abiertas. Si quieres borrar también tu historial, escribe ELIMINAR.';
+
+export const NOTHING_TO_REVOKE_NOTICE =
+  'No tenías una autorización activa, así que no hay nada que retirar. Si quieres borrar los datos asociados a tu número, escribe ELIMINAR.';
+
+export const ERASED_NOTICE =
+  'Listo, borré tu historial y los datos asociados a tu número, y retiré tu autorización si la tenías. Solo conservo la constancia de tus autorizaciones, como respaldo.';
+
+// Served when a BAJA or ELIMINAR could not be processed, so the sender is never told a
+// right was exercised when it was not.
+export const RIGHTS_FAILED_NOTICE =
+  'No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.';
 
 // Served to a CONSENTED sender when the rate-limit counter could not be read or
 // written. For a consented sender the counter is the only per-sender ceiling on Claude
@@ -101,6 +127,11 @@ export type GateAllowReason = 'consented';
 export type GateDecision =
   /** Continue into the full existing pipeline, unchanged. Carries no reply. */
   | { outcome: 'allow'; reason: GateAllowReason }
+  /**
+   * A BAJA or ELIMINAR was handled (or honestly failed). Send `response` and mark
+   * completed. No Claude, no history.
+   */
+  | { outcome: 'rights'; response: string }
   /** Sender is over the ceiling. Send `response` and mark completed. No retry. */
   | { outcome: 'rate_limited'; response: string }
   /**
@@ -119,6 +150,8 @@ export interface GateDependencies {
   getSenderConsentState: typeof getSenderConsentState;
   recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
+  revokeSenderConsent: typeof revokeSenderConsent;
+  eraseSenderData: typeof eraseSenderData;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
@@ -126,6 +159,8 @@ const defaultDependencies: GateDependencies = {
   getSenderConsentState,
   recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
+  eraseSenderData,
   consumeRateLimitSlot,
 };
 
@@ -211,6 +246,21 @@ export async function evaluateGate(
 
   // One identity for consent and for the rate limit, both scoped to this psychologist.
   const senderKey = normalizePhoneNumber(senderNumber);
+
+  // 0. Rights requests, before the rate limit and before consent: exercising a right
+  //    must never depend on having consented or on how many messages were sent.
+  const command = normalizeForTokenMatch(cleanMessage);
+  if (command === REVOKE_TOKEN) {
+    const revoked = await dependencies.revokeSenderConsent(psicologo.id, senderKey, wamid);
+    const response =
+      revoked === null ? RIGHTS_FAILED_NOTICE : revoked ? REVOKED_NOTICE : NOTHING_TO_REVOKE_NOTICE;
+    return { outcome: 'rights', response };
+  }
+  if (command === ERASE_TOKEN) {
+    const erased = await dependencies.eraseSenderData(psicologo.id, senderKey, wamid);
+    return { outcome: 'rights', response: erased === null ? RIGHTS_FAILED_NOTICE : ERASED_NOTICE };
+  }
+
   const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
   const { consented, policy } = consentState;
 
@@ -252,7 +302,12 @@ export async function evaluateGate(
 
   const answer = deterministicAnswer(cleanMessage, psicologo);
 
-  // 3. No published policy: nobody can consent, so no consent is requested either.
+  // 3a. The consent state could not be read: say so, and ask nothing.
+  if (consentState.lookupFailed) {
+    return { outcome: 'limited', response: `${answer}\n\n${CONSENT_CHECK_FAILED_NOTICE}` };
+  }
+
+  // 3b. No published policy: nobody can consent, so no consent is requested either.
   if (!policy) {
     return { outcome: 'limited', response: `${answer}\n\n${CONSENT_UNAVAILABLE_NOTICE}` };
   }

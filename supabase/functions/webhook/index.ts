@@ -17,10 +17,12 @@ import {
   getBoundedHistory,
   getOrCreateConversacion,
   getPsicologo,
+  eraseSenderData,
   getSenderConsentState,
   markDeliveryUncertain,
   recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
 } from '../_shared/supabase.ts';
 import { processIncomingMessage } from '../_shared/bot.ts';
 import { evaluateGate } from '../_shared/gate.ts';
@@ -70,6 +72,8 @@ export interface WebhookDependencies {
   getSenderConsentState: typeof getSenderConsentState;
   recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
+  revokeSenderConsent: typeof revokeSenderConsent;
+  eraseSenderData: typeof eraseSenderData;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
@@ -88,6 +92,8 @@ const defaultDependencies: WebhookDependencies = {
   getSenderConsentState,
   recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
+  eraseSenderData,
   consumeRateLimitSlot,
 };
 
@@ -246,6 +252,8 @@ async function processMessage(
         getSenderConsentState: dependencies.getSenderConsentState,
         recordConsentPromptShown: dependencies.recordConsentPromptShown,
         recordSenderConsent: dependencies.recordSenderConsent,
+        revokeSenderConsent: dependencies.revokeSenderConsent,
+        eraseSenderData: dependencies.eraseSenderData,
         consumeRateLimitSlot: dependencies.consumeRateLimitSlot,
       }
     );
@@ -265,6 +273,8 @@ async function processMessage(
     // second outbound message for no new information, and each attempt would re-enter
     // this gate and burn another slot.
     switch (gateDecision.outcome) {
+      // BAJA or ELIMINAR handled, or honestly failed. No Claude, no persistence.
+      case 'rights':
       // Over the ceiling: send the over-limit text. No Claude, no persistence.
       case 'rate_limited':
       // Consent recorded: send the confirmation and greeting. No Claude, no persistence.

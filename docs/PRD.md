@@ -12,7 +12,7 @@ Google Auth, dashboard, editor de perfil, propiedad por usuario y operación mul
 - **Paciente:** escribe por WhatsApp y no crea cuenta. Su número normalizado y el historial de conversación se almacenan en Supabase.
 - **Operador técnico:** configura el proyecto, aplica migraciones y despliega; no es un usuario de producto.
 
-La Fase 1 no tiene consentimiento digital, exportación, retención ni eliminación de datos. En una interacción de crisis, el texto del paciente no se conserva: se persiste un marcador redactado.
+La Fase 1 pide consentimiento versionado por WhatsApp antes de guardar historial o llamar a Claude, y permite retirarlo (`BAJA`) o borrar el historial (`ELIMINAR`). Las conversaciones se borran tras 90 días sin actividad. No hay exportación. Los mensajes clínicos o de crisis se guardan como un marcador redactado.
 
 ## 3. Leyenda de fases
 
@@ -92,7 +92,7 @@ La Fase 2 debe agregar ownership por `auth.uid()` y políticas RLS específicas.
 
 - Número e historial de pacientes se almacenan.
 - El texto de crisis se redacta antes de persistirlo.
-- No hay consentimiento, retención, eliminación ni exportación.
+- Consentimiento versionado por WhatsApp (`ACEPTO`), retiro (`BAJA`), borrado (`ELIMINAR`) y borrado automático tras 90 días sin actividad (ver `docs/09-privacidad-y-consentimiento.md`). No hay exportación de datos.
 - La detección de crisis es heurística y no es evaluación clínica.
 - No hay canal de notificación al psicólogo.
 - `send-message` requiere secreto interno y no es una API pública.
@@ -106,7 +106,7 @@ La Fase 2 debe agregar ownership por `auth.uid()` y políticas RLS específicas.
 
 ## 11. Fuera de alcance
 
-No se promete certificación legal, escalamiento clínico, notificación profesional, consentimiento, retención, RAG actual, multimedia ni despliegue automático desde CI. Los costos y límites de los proveedores deben verificarse antes de una decisión comercial.
+No se promete certificación legal, escalamiento clínico, notificación profesional, exportación de datos, RAG actual, multimedia ni despliegue automático desde CI. Los costos y límites de los proveedores deben verificarse antes de una decisión comercial.
 
 ---
 

@@ -37,7 +37,31 @@ set texto = '<texto aprobado, con {profesional} y la palabra ACEPTO>',
 where version = '2026-11-borrador';
 ```
 
-Para cambiar una política ya publicada, inserta una versión nueva; no edites la anterior.
+Para cambiar una política ya publicada, inserta una versión nueva; no edites la anterior. El `service_role` solo puede leer las políticas: publícalas desde el editor SQL.
+
+No publiques la política antes de desplegar la migración 008 y la Edge Function que atiende `BAJA` y `ELIMINAR`: el texto los promete.
+
+## Derechos por WhatsApp
+
+| Mensaje | Qué hace | Qué se conserva |
+|---|---|---|
+| `BAJA` | Agrega un evento `revoked` si había una autorización vigente | El historial, hasta `ELIMINAR` o hasta el borrado por retención |
+| `ELIMINAR` | Retira la autorización y borra la conversación, los avisos mostrados, los contadores y el consentimiento heredado de 006 | Solo `consent_events` |
+
+Las dos palabras se aceptan sin importar mayúsculas ni tildes, pero solas: "quiero darme de baja del plan" no cuenta. Se atienden antes del límite de mensajes y sin exigir consentimiento. Si la base falla, el bot lo dice y no confirma nada.
+
+## Retención
+
+`purge_expired_personal_data(interval '90 days')` borra:
+
+- conversaciones sin actividad en ese plazo;
+- avisos de consentimiento mostrados hace más de ese plazo;
+- filas de idempotencia (`mensajes_procesados`) de más de ese plazo;
+- contadores de mensajes de más de un día.
+
+Nunca toca `consent_events` y rechaza plazos menores a un día.
+
+La migración no programa el borrado. La primera ejecución borra de una vez todas las conversaciones que ya superan los 90 días, y no se puede deshacer. Antes de programarlo, revisa cuántas se borrarían y ejecuta a mano `supabase/scripts/schedule_retention_purge.sql`, que activa `pg_cron` y agenda la tarea todos los días a las 07:00 UTC.
 
 ## Registro de consentimiento
 
@@ -45,7 +69,7 @@ Para cambiar una política ya publicada, inserta una versión nueva; no edites l
 
 ## Pruebas de base de datos
 
-`supabase/tests/consent_and_retention.test.sql` prueba las migraciones contra un Postgres real y deshace todo al terminar:
+`supabase/tests/consent_and_retention.test.sql` prueba las migraciones 007 y 008 contra un Postgres real y deshace todo al terminar:
 
 ```bash
 docker run -d --rm --name artemisa-pg-test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine

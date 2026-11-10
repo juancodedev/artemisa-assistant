@@ -34,7 +34,7 @@ Las señales de crisis tienen prioridad absoluta, no llaman a Claude, entregan �
 
 ## Fuera de alcance actual
 
-Google Auth, dashboard, formulario de edición, múltiples profesionales con propiedad por usuario, RAG, consentimiento y ciclo de retención de datos, notificaciones clínicas y canales adicionales de entrada permanecen en Fase 2 o etapas posteriores.
+Google Auth, dashboard, formulario de edición, múltiples profesionales con propiedad por usuario, RAG, exportación de datos, notificaciones clínicas y canales adicionales de entrada permanecen en Fase 2 o etapas posteriores.
 
 ---
 

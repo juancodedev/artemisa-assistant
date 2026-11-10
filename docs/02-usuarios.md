@@ -26,7 +26,7 @@ En una ruta de crisis, el texto entrante no se persiste. Se almacena un marcador
 
 ## Límites actuales
 
-- No hay consentimiento digital ni mecanismo de acceso, exportación o eliminación del historial.
+- El paciente autoriza con `ACEPTO`, retira la autorización con `BAJA` y borra su historial con `ELIMINAR` (ver `docs/09-privacidad-y-consentimiento.md`). No hay acceso ni exportación del historial.
 - No existe una cuenta que vincule al paciente con el profesional.
 - No existe notificación al psicólogo ni canal clínico de escalamiento.
 - El `service_role` accede desde el servidor y bypassa RLS; no debe exponerse al navegador.

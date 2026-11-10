@@ -40,12 +40,13 @@ export function normalizePhoneNumber(number: string): string {
 // patient's request, a false negative leaves a person in crisis without the helpline.
 // So the two phrases that are also everyday idioms match by default, and only their
 // known idiomatic continuations are excluded: "me mato estudiando", "terminar con todo
-// el papeleo". "Esta noche me mato" and "terminar con todo esto" still match.
+// el papeleo". "Esta noche me mato" and "terminar con todo esto" still match, and so
+// do continuations with a preposition, as in "me mato con las pastillas".
 const CRISIS_PATTERNS: readonly RegExp[] = [
   /suicid/,
   /\bmatarme\b/,
   /\bme (?:quiero|voy a|gustaria|quisiera|pienso) matar\b/,
-  /\bme mato\b(?!\s+(?:estudiando|trabajando|haciendo|corriendo|entrenando|de (?:la )?risa|en el|en la|con el|con la|con los|con las)\b)/,
+  /\bme mato\b(?!\s+(?:estudiando|trabajando|haciendo|corriendo|entrenando|de (?:la )?risa)\b)/,
   /\bquitarme la vida\b/,
   /\b(?:acabar|terminar) con mi vida\b/,
   /\b(?:acabar|terminar) con todo\b(?!\s+(?:el|la|los|las|lo|un|una|mi|mis|tu|tus|su|sus|del)\b)/,

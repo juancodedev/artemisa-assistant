@@ -116,7 +116,7 @@ La fuente activa es `supabase/seed/001_test_psicologo.sql`. `supabase/migrations
 ## Límites de la Fase 1
 
 - Los pacientes no tienen cuenta, pero su número e historial de conversación sí se almacenan en Supabase.
-- No existe flujo de consentimiento, retención ni eliminación de datos.
+- Consentimiento versionado por WhatsApp (`ACEPTO`), retiro (`BAJA`), borrado (`ELIMINAR`) y borrado automático tras 90 días sin actividad (ver `docs/09-privacidad-y-consentimiento.md`). No hay exportación de datos.
 - La detección de crisis por palabras clave es heurística y no reemplaza una evaluación clínica.
 - No existe un canal de notificación al psicólogo.
 - El inbound admite solo texto.

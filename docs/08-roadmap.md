@@ -25,7 +25,7 @@
 - Perfil único; fallback de fila única únicamente cuando no hay varias filas.
 - Sin Google Auth, dashboard ni editor de perfil.
 - Sin RAG ni base vectorial.
-- Sin consentimiento, retención o eliminación de datos.
+- Consentimiento versionado por WhatsApp (`ACEPTO`), retiro (`BAJA`), borrado (`ELIMINAR`) y borrado automático tras 90 días sin actividad (ver `docs/09-privacidad-y-consentimiento.md`). No hay exportación de datos.
 - Sin canal de notificación clínica.
 - Solo inbound de texto.
 - Detección de crisis heurística.
@@ -45,8 +45,8 @@
 
 Puede avanzar junto con la autoadministración:
 
-- Consentimiento y política de retención.
-- Exportación y eliminación de datos.
+- Texto legal definitivo de la política, publicación y programación del borrado automático.
+- Exportación de datos.
 - Procedimiento para revisar `delivery_uncertain` y fallos de persistencia.
 - Observabilidad, alertas y trazabilidad operativa.
 - Validación de que ninguna credencial o dato sensible llegue al cliente.

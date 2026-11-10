@@ -24,6 +24,9 @@ const RATE_BUCKETS_TABLE = 'sender_rate_buckets';
 const CONSENT_PROMPT_CONFLICT_TARGET = 'psicologo_id,numero_remitente,policy_version';
 // Consent state function created by migration 007.
 const CONSENT_STATE_FUNCTION = 'get_sender_consent_state';
+// Sender rights functions created by migration 008.
+const REVOKE_CONSENT_FUNCTION = 'revoke_sender_consent';
+const ERASE_DATA_FUNCTION = 'erase_sender_data';
 // Name of the atomic increment function created by migration 006.
 const RATE_LIMIT_SLOT_FUNCTION = 'consume_sender_rate_limit_slot';
 
@@ -423,16 +426,21 @@ export async function appendMessagesToConversacion(
  *                newer policy asks again.
  * - promptShown: the consent text of that version was already sent to this sender.
  *
- * Never throws. A failure reports no policy and no consent, which keeps the sender on
- * the deterministic path: treating an error as consent would store history and call
- * Claude for someone who never agreed to it.
+ * Never throws. A failure reports no consent with lookupFailed set, which keeps the
+ * sender on the deterministic path: treating an error as consent would store history
+ * and call Claude for someone who never agreed to it.
  */
 export async function getSenderConsentState(
   psicologoId: string,
   senderNumber: string,
   client: SupabaseClient = getSupabaseClient()
 ): Promise<SenderConsentState> {
-  const unknownState: SenderConsentState = { policy: null, consented: false, promptShown: false };
+  const failedState: SenderConsentState = {
+    policy: null,
+    consented: false,
+    promptShown: false,
+    lookupFailed: true,
+  };
   try {
     const { data, error } = await client.rpc(CONSENT_STATE_FUNCTION, {
       p_psicologo_id: psicologoId,
@@ -441,27 +449,32 @@ export async function getSenderConsentState(
 
     if (error) {
       console.error('Error loading sender consent state');
-      return unknownState;
+      return failedState;
     }
 
     const row = Array.isArray(data) ? data[0] : data;
+    // No row is the documented answer for "no published policy".
+    if (!row) {
+      return { policy: null, consented: false, promptShown: false, lookupFailed: false };
+    }
     if (
-      !row ||
       typeof row.policy_version !== 'string' ||
       typeof row.policy_texto !== 'string' ||
       typeof row.politica_url !== 'string'
     ) {
-      return unknownState;
+      console.error('Malformed sender consent state');
+      return failedState;
     }
 
     return {
       policy: { version: row.policy_version, texto: row.policy_texto, url: row.politica_url },
       consented: row.consented === true,
       promptShown: row.prompt_shown === true,
+      lookupFailed: false,
     };
   } catch {
     console.error('Exception loading sender consent state');
-    return unknownState;
+    return failedState;
   }
 }
 
@@ -578,6 +591,62 @@ export async function consumeRateLimitSlot(
     return data;
   } catch {
     console.error('Exception in consumeRateLimitSlot');
+    return null;
+  }
+}
+
+/**
+ * BAJA: withdraw the sender's consent through revoke_sender_consent (migration 008),
+ * which appends a revoked event to the consent log.
+ *
+ * Returns true when a consent was withdrawn, false when there was none, and null when
+ * the request could not be processed. Never throws.
+ */
+export async function revokeSenderConsent(
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean | null> {
+  return await callRightsFunction(REVOKE_CONSENT_FUNCTION, psicologoId, senderNumber, wamid, client);
+}
+
+/**
+ * ELIMINAR: withdraw consent and delete the sender's conversation, prompts and rate
+ * counters through erase_sender_data (migration 008). The consent log is kept.
+ *
+ * Returns true when a consent was also withdrawn, false when there was none, and null
+ * when nothing could be erased. Never throws.
+ */
+export async function eraseSenderData(
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean | null> {
+  return await callRightsFunction(ERASE_DATA_FUNCTION, psicologoId, senderNumber, wamid, client);
+}
+
+async function callRightsFunction(
+  name: string,
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient
+): Promise<boolean | null> {
+  try {
+    const { data, error } = await client.rpc(name, {
+      p_psicologo_id: psicologoId,
+      p_numero_remitente: senderNumber,
+      p_wamid: wamid,
+    });
+    if (error || typeof data !== 'boolean') {
+      console.error(`Error calling ${name}`);
+      return null;
+    }
+    return data;
+  } catch {
+    console.error(`Exception calling ${name}`);
     return null;
   }
 }

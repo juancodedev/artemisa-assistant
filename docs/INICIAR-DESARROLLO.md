@@ -116,7 +116,7 @@ La ruta de crisis se ejecuta antes de agenda, clínica, administración local y 
 
 ## Límites conocidos
 
-- Se almacenan número e historial del paciente; no hay consentimiento, retención ni eliminación.
+- Con autorización (`ACEPTO`) se almacenan número e historial del paciente; `BAJA`, `ELIMINAR` y el borrado tras 90 días se describen en `docs/09-privacidad-y-consentimiento.md`.
 - La detección de crisis es heurística.
 - No existe canal de notificación clínica.
 - El `service_role` bypassa RLS y debe permanecer en Edge Functions.
