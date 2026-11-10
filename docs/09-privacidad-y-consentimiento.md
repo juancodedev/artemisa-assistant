@@ -72,7 +72,7 @@ Las dos palabras se aceptan sin importar mayúsculas ni tildes, pero solas: "qui
 
 Nunca toca `consent_events` y rechaza plazos menores a un día.
 
-El plazo está escrito en dos lugares que deben coincidir: el valor por defecto de la función (migración 008) y el texto de la política. La tarea programada llama a la función sin argumento. Si cambias el plazo, cambia los dos y publica una versión nueva de la política. Una tarea agendada con una versión anterior del script puede pasar el plazo explícito: vuelve a ejecutar el script para que use el valor por defecto (revisa el comando con `select command from cron.job`).
+El plazo que rige es el valor por defecto de la función (migración 008), y el texto de la política lo promete. También aparece escrito a mano en la consulta de vista previa del script y en esta página. La tarea programada llama a la función sin argumento. Si cambias el plazo, cambia los dos y publica una versión nueva de la política. Una tarea agendada con una versión anterior del script puede pasar el plazo explícito: vuelve a ejecutar el script para que use el valor por defecto (revisa el comando con `select command from cron.job`).
 
 La migración no programa el borrado. La primera ejecución borra de una vez todas las conversaciones que ya superan los 90 días, y no se puede deshacer. Antes de programarlo, revisa cuántas se borrarían y ejecuta a mano `supabase/scripts/schedule_retention_purge.sql`, que activa `pg_cron` y agenda la tarea todos los días a las 07:00 UTC.
 
