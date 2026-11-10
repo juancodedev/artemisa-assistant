@@ -28,9 +28,9 @@ import { isCrisisSignal, normalizePhoneNumber, sanitizeInput } from '../_shared/
 import { aggregateBatchOutcomes, type BatchMessageOutcome } from '../_shared/batch.ts';
 
 const UNAVAILABLE_RESPONSE =
-  'En este momento el servicio está temporalmente no disponible. Por favor contactá a tu profesional directamente.';
+  'En este momento el servicio no está disponible. Por favor, comunícate directamente con tu profesional.';
 const MEDIA_RESPONSE =
-  'Por el momento solo puedo procesar mensajes de texto. Para enviarme audios o documentos, por favor contactá directamente a tu psicólogo/a.';
+  'Por el momento solo puedo procesar mensajes de texto. Para enviar audios o documentos, comunícate directamente con tu psicólogo/a.';
 const CRISIS_USER_MESSAGE_PLACEHOLDER = '[mensaje de crisis omitido]';
 
 export interface WebhookDependencies {

@@ -18,7 +18,7 @@ Test runner: `deno test` over `supabase/functions/_shared/phase1.test.ts`; SQL v
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | T1 Crisis detection and unconditional reply | S1 | inline | done: RED 3 failed, GREEN 42 passed | see Log L5 |
-| T2 Remove the promise, neutral Spanish | S2, S6 | inline | pending | |
+| T2 Remove the promise, neutral Spanish | S2, S6 | inline | done: RED 3 failed, GREEN 43 passed | see Log L6 |
 | T3 Clinical minimization | S5 | inline | pending | |
 | T4 Versioned consent | S3, S6 | inline | pending | |
 | T5 BAJA, ELIMINAR, retention purge | S4 | inline | pending | |
@@ -32,3 +32,4 @@ Route evidence: no Writer trigger; units depend on each other and share `gate.ts
 - L3 (2026-11-09, user, verbatim): "primer pais, Chile / Borrado, 90 dias está bien / los textos, si, en español neutro la verdad / procede e implementa el pr"
 - L4 Baseline: 39 Edge tests pass on `58220ef` with Deno 2.1.10 installed outside the repository.
 - L5 T1: real phrasings ("me quiero matar", "me voy a suicidar") were missed; patterns now cover them. The webhook sends the crisis line before the profile lookup, the rate limit, and consent, and through claim, profile, and conversation outages. The redacted exchange is stored only for a consented sender. RED 3 failed; GREEN 42 passed; `deno check` clean.
+- L6 T2: the four replies that promised a follow-up ("te contactará a la brevedad", "revisará tu consulta", "te responderá") now point to a channel that reaches a person. One `CLINICAL_REFERRAL_RESPONSE` serves both the router and Claude's prompt. Patient-facing strings in `supabase/functions/` are neutral Spanish; the consent strings are rewritten in T4. `src/` is the undeployed legacy tree and stays unchanged. RED 3 failed; GREEN 43 passed; Node tests 13 passed.

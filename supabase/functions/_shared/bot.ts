@@ -27,7 +27,7 @@ export async function processIncomingMessage(
   if (!isValidWhatsAppNumber(normalizedNumber)) {
     return {
       success: false,
-      response: 'El formato del número de WhatsApp no parece válido. Por favor contactá a tu profesional directamente.',
+      response: 'El formato del número de WhatsApp no parece válido. Por favor, comunícate directamente con tu profesional.',
       tipo: 'administrativa',
       normalizedPatientNumber: normalizedNumber,
     };

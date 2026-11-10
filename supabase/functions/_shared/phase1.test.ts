@@ -909,7 +909,7 @@ Deno.test('uses bounded Claude request options, all text blocks, and strips gene
   } as unknown as Anthropic);
   const empty = await generateResponse('¿Dónde queda?', profile);
   setAnthropicClientForTests(null);
-  assert.match(empty.contenido, /revisará tu consulta/);
+  assert.match(empty.contenido, /no pude procesar tu consulta/);
 });
 
 Deno.test('prioritizes crisis signals over scheduling and never calls Claude', async () => {
@@ -1051,7 +1051,66 @@ Deno.test('sends the crisis line through every database failure', async () => {
 Deno.test('keeps the ordinary clinical response separate from crisis routing', async () => {
   const result = await routeMessage('Tengo mucha ansiedad y no puedo dormir', profile);
   assert.equal(result.tipo, 'clinica');
-  assert.equal(result.contenido, `Esta consulta requiere atención directa con tu psicólogo/a. ${profile.nombre} te contactará a la brevedad.`);
+  assert.equal(
+    result.contenido,
+    'Esta consulta requiere atención directa con tu psicólogo/a y por este medio no puedo derivarla. Escríbele por tu canal habitual o agenda una cita.'
+  );
+});
+
+// Voseo forms and the promise of a follow-up that nobody sends. Voseo is told apart
+// from neutral Spanish by its stressed final vowel ("llamá" versus "llama"), so the
+// forms are accented and matched as whole words with Unicode-aware boundaries.
+const VOSEO_PATTERN = /(?<!\p{L})(?:podés|tenés|querés|sabés|necesitás|respondé|contactá|intentá|llamá|escribí|consultá|agendá|decí|sos|vos|acá)(?!\p{L})/iu;
+const PROMISE_PATTERN = /a la brevedad|te contactar[aá]|te responder[aá]|revisar[aá] tu consulta/i;
+
+function assertNeutralWithoutPromise(text: string, label: string): void {
+  assert.equal(VOSEO_PATTERN.test(text), false, `${label} uses voseo: ${text}`);
+  assert.equal(PROMISE_PATTERN.test(text), false, `${label} promises a follow-up: ${text}`);
+}
+
+Deno.test('answers patients in neutral Spanish and never promises a follow-up', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const routed = [
+    CRISIS_RESPONSE,
+    greetingResponse(profile).contenido,
+    routeDeterministicMessage('quiero agendar una cita', profile)?.contenido ?? '',
+    routeDeterministicMessage('me siento mal', profile)?.contenido ?? '',
+    quickAdminAnswer('¿Cuáles son los horarios?', profile) ?? '',
+    RATE_LIMIT_RESPONSE,
+    DEGRADED_SERVICE_RESPONSE,
+  ];
+  routed.forEach((text, index) => assertNeutralWithoutPromise(text, `response ${index}`));
+
+  // Claude's empty-answer and failure fallbacks.
+  setAnthropicClientForTests({
+    messages: { create: async () => ({ content: [] }) },
+  } as unknown as Anthropic);
+  assertNeutralWithoutPromise((await generateResponse('Hola', profile)).contenido, 'empty fallback');
+  setAnthropicClientForTests({
+    messages: { create: async () => { throw new Error('unavailable'); } },
+  } as unknown as Anthropic);
+  assertNeutralWithoutPromise((await generateResponse('Hola', profile)).contenido, 'failure fallback');
+  setAnthropicClientForTests(null);
+
+  // The webhook's own replies: no profile, and a message without text.
+  for (const [label, body, overrides] of [
+    ['unavailable', 'Hola', { getPsicologo: (async () => null) as unknown as WebhookDependencies['getPsicologo'] }],
+    ['media', '   ', {}],
+  ] as Array<[string, string, Partial<WebhookDependencies>]>) {
+    const sentTexts: string[] = [];
+    await handleWebhook(
+      await buildWebhookRequest(body, `wamid-copy-${label}`),
+      createWebhookDependencies({
+        sendMessage: (async (_to: string, text: string) => {
+          sentTexts.push(text);
+          return { success: true, delivery: 'delivered', messageId: 'sent' };
+        }) as unknown as WebhookDependencies['sendMessage'],
+        ...overrides,
+      })
+    );
+    assert.equal(sentTexts.length, 1, label);
+    assertNeutralWithoutPromise(sentTexts[0], label);
+  }
 });
 
 Deno.test('redacts raw crisis text while persisting the safety interaction', async () => {

@@ -73,7 +73,7 @@ export const CONSENT_REQUEST =
   'Para responderte consultas abiertas y recordar esta conversación necesito tu consentimiento. Respondé QUIERO para aceptarlo. Mientras tanto podés consultarme por precios, horarios, ubicación y cómo agendar una cita.';
 
 export const RATE_LIMIT_RESPONSE =
-  'Recibí demasiados mensajes en la última hora. Por favor intentá de nuevo en un rato. Si necesitás hablar con tu psicólogo/a, podés contactarlo/la directamente.';
+  'Recibí demasiados mensajes en la última hora. Por favor, intenta de nuevo más tarde. Si necesitas hablar con tu psicólogo/a, comunícate directamente.';
 
 export const OPT_IN_CONFIRMED_NOTICE =
   'Perfecto, registré tu consentimiento. Ya puedo responderte consultas abiertas y recordar esta conversación.';
@@ -89,7 +89,7 @@ export const OPT_IN_FAILED_NOTICE =
 // entirely for exactly the sender who can spend the most. Saying so honestly is
 // better than serving unbounded generated answers.
 export const DEGRADED_SERVICE_RESPONSE =
-  'No puedo verificar tu límite de mensajes en este momento, así que pause la conversación por seguridad. Por favor intentá de nuevo en un rato o contactá directamente a tu psicólogo/a.';
+  'No puedo verificar tu límite de mensajes en este momento, así que pausé la conversación por seguridad. Por favor, intenta de nuevo más tarde o comunícate directamente con tu psicólogo/a.';
 
 // ---------------------------------------------------------------------------
 // Decision
