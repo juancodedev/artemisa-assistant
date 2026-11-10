@@ -45,7 +45,7 @@
 
 Puede avanzar junto con la autoadministración:
 
-- Texto legal definitivo de la política, publicación y programación del borrado automático.
+- Texto legal definitivo de la política y su publicación. El borrado automático ya está programado en producción.
 - Exportación de datos.
 - Procedimiento para revisar `delivery_uncertain` y fallos de persistencia.
 - Observabilidad, alertas y trazabilidad operativa.
