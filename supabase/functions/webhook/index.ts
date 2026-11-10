@@ -141,6 +141,10 @@ async function handleDeliveryResult(
  * Store a redacted crisis exchange, only for a sender who consented to history.
  * Runs after delivery, so a failure here can never cost the sender the crisis line.
  * Returns false only when a consented exchange could not be stored.
+ *
+ * Fails closed on purpose: crisis messages skip the gate, so this is the only consent
+ * read, and an unreadable consent is not proof of consent. The marker is not stored
+ * then, even for a sender who had consented; the helpline was already sent.
  */
 async function persistCrisisExchange(
   message: WebhookMessage,

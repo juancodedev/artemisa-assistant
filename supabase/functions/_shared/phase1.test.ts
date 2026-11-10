@@ -26,6 +26,7 @@ import {
 } from './supabase.ts';
 import { aggregateBatchOutcomes } from './batch.ts';
 import {
+  CLINICAL_REFERRAL_RESPONSE,
   generateResponse,
   quickAdminAnswer,
   setAnthropicClientForTests,
@@ -53,7 +54,7 @@ import {
   rateLimitWindowStart,
   renderConsentRequest,
 } from './gate.ts';
-import { isCrisisSignal } from './validation.ts';
+import { CLINICAL_TEXT_PLACEHOLDER, isClinicalQuestion, isCrisisSignal, redactSensitiveText } from './validation.ts';
 import { handleSendMessage } from '../send-message/handler.ts';
 import { handleWebhook, type WebhookDependencies } from '../webhook/index.ts';
 import type { ConsentPolicy, MensajeHistoria, Psicologo, SenderConsentState } from './types.ts';
@@ -987,6 +988,31 @@ Deno.test('sends the crisis line and stores nothing for a non-consented sender',
   assert.deepEqual(probe.completedWamids, ['wamid-crisis-stranger']);
 });
 
+Deno.test('sends the crisis line and stores nothing when consent cannot be read', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  // Fail closed on purpose: a crisis marker is stored only for a sender whose consent
+  // was read and is in force. An unreadable consent is not proof of consent.
+  const probe = createGateProbe();
+  const response = await handleWebhook(
+    await buildWebhookRequest('me quiero matar', 'wamid-crisis-unread'),
+    createWebhookDependencies({
+      ...probe.overrides(true),
+      getSenderConsentState: (async () => ({
+        policy: null,
+        consented: false,
+        promptShown: false,
+        lookupFailed: true,
+      })) as unknown as WebhookDependencies['getSenderConsentState'],
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(probe.sentTexts, [CRISIS_RESPONSE]);
+  assert.equal(probe.conversationLookups, 0);
+  assert.equal(probe.persistedConversations, 0);
+  assert.deepEqual(probe.completedWamids, ['wamid-crisis-unread']);
+});
+
 Deno.test('asks Meta to redeliver a crisis message whose helpline was not sent', async () => {
   Deno.env.set('META_APP_SECRET', 'test-app-secret');
   for (const claim of ['claimed', 'uncertain']) {
@@ -1049,6 +1075,55 @@ Deno.test('sends the crisis line through every database failure', async () => {
     assert.deepEqual(sentTexts, [CRISIS_RESPONSE], name);
     // The patient already has the line, so Meta must not redeliver and repeat it.
     assert.equal(response.status, 200, name);
+  }
+});
+
+Deno.test('detects clinical messages without flagging administrative ones', () => {
+  const clinical = [
+    'estoy deprimida',
+    'Me siento DEPRIMIDO desde hace semanas',
+    'tomo sertralina, ¿la puedo dejar?',
+    'Tomo Escitalopram y clonazepam',
+    'no puedo dormir',
+    'tengo insomnio',
+    'tengo ataques de pánico',
+    'me dio un ataque de panico',
+    'tuve una crisis de pánico',
+    // Keywords that already matched keep matching, with or without accents.
+    'Tengo ANSIEDAD',
+    'necesito una receta',
+    '¿me puede dar un diagnostico?',
+    'ya no puedo mas',
+    'quiero saber de la medicación',
+  ];
+  for (const text of clinical) {
+    assert.equal(isClinicalQuestion(text), true, text);
+    assert.equal(redactSensitiveText(text), CLINICAL_TEXT_PLACEHOLDER, text);
+  }
+
+  const administrative = [
+    'me da pánico hablar por teléfono, ¿puedo agendar por aquí?',
+    '¿Cuánto cuesta la sesión?',
+    '¿Atienden los sábados?',
+  ];
+  for (const text of administrative) {
+    assert.equal(isClinicalQuestion(text), false, text);
+    assert.equal(redactSensitiveText(text), text, text);
+  }
+});
+
+Deno.test('classifies Claude\'s clinical referral from the referral text itself', async () => {
+  for (const [reply, tipo] of [
+    [CLINICAL_REFERRAL_RESPONSE, 'clinica'],
+    [`Hola. ${CLINICAL_REFERRAL_RESPONSE}`, 'clinica'],
+    ['La atención es presencial en el consultorio.', 'administrativa'],
+  ] as const) {
+    setAnthropicClientForTests({
+      messages: { create: async () => ({ content: [{ type: 'text', text: reply }] }) },
+    } as unknown as Anthropic);
+    const result = await generateResponse('¿Cómo es la atención?', profile);
+    setAnthropicClientForTests(null);
+    assert.equal(result.tipo, tipo, reply);
   }
 });
 
