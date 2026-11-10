@@ -113,8 +113,9 @@ export function isClinicalQuestion(message: string): boolean {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
   if (CLINICAL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return true;
-  // Any mention of panic, except the everyday "(me) da pánico" said of a task.
-  return /panico/.test(normalized) && !/\bdan? (?:(?:un poco de|algo de|mucho) )?panico\b/.test(normalized);
+  // Any mention of panic counts, except the everyday "(me) da pánico". The everyday
+  // phrases are removed first, so one of them cannot hide another mention.
+  return /panico/.test(normalized.replace(/\bdan? (?:(?:un poco de|algo de|mucho) )?panico\b/g, ''));
 }
 
 export const CRISIS_TEXT_PLACEHOLDER = '[mensaje de crisis omitido]';
