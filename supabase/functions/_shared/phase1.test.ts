@@ -26,6 +26,7 @@ import {
 } from './supabase.ts';
 import { aggregateBatchOutcomes } from './batch.ts';
 import {
+  CLINICAL_REFERRAL_RESPONSE,
   generateResponse,
   quickAdminAnswer,
   setAnthropicClientForTests,
@@ -49,10 +50,14 @@ import {
   RATE_LIMIT_RESPONSE,
   consentReminder,
   evaluateGate,
+  ERASE_TOKEN,
+  OPT_IN_TOKENS,
+  REVOKE_TOKEN,
   isOptInToken,
+  rateLimitWindowStart,
   renderConsentRequest,
 } from './gate.ts';
-import { isCrisisSignal } from './validation.ts';
+import { CLINICAL_TEXT_PLACEHOLDER, isClinicalQuestion, isCrisisSignal, redactSensitiveText } from './validation.ts';
 import { handleSendMessage } from '../send-message/handler.ts';
 import { handleWebhook, type WebhookDependencies } from '../webhook/index.ts';
 import type { ConsentPolicy, MensajeHistoria, Psicologo, SenderConsentState } from './types.ts';
@@ -986,6 +991,31 @@ Deno.test('sends the crisis line and stores nothing for a non-consented sender',
   assert.deepEqual(probe.completedWamids, ['wamid-crisis-stranger']);
 });
 
+Deno.test('sends the crisis line and stores nothing when consent cannot be read', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  // Fail closed on purpose: a crisis marker is stored only for a sender whose consent
+  // was read and is in force. An unreadable consent is not proof of consent.
+  const probe = createGateProbe();
+  const response = await handleWebhook(
+    await buildWebhookRequest('me quiero matar', 'wamid-crisis-unread'),
+    createWebhookDependencies({
+      ...probe.overrides(true),
+      getSenderConsentState: (async () => ({
+        policy: null,
+        consented: false,
+        promptShown: false,
+        lookupFailed: true,
+      })) as unknown as WebhookDependencies['getSenderConsentState'],
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(probe.sentTexts, [CRISIS_RESPONSE]);
+  assert.equal(probe.conversationLookups, 0);
+  assert.equal(probe.persistedConversations, 0);
+  assert.deepEqual(probe.completedWamids, ['wamid-crisis-unread']);
+});
+
 Deno.test('asks Meta to redeliver a crisis message whose helpline was not sent', async () => {
   Deno.env.set('META_APP_SECRET', 'test-app-secret');
   for (const claim of ['claimed', 'uncertain']) {
@@ -1048,6 +1078,66 @@ Deno.test('sends the crisis line through every database failure', async () => {
     assert.deepEqual(sentTexts, [CRISIS_RESPONSE], name);
     // The patient already has the line, so Meta must not redeliver and repeat it.
     assert.equal(response.status, 200, name);
+  }
+});
+
+Deno.test('detects clinical messages without flagging administrative ones', () => {
+  const clinical = [
+    'estoy deprimida',
+    'Me siento DEPRIMIDO desde hace semanas',
+    'tomo sertralina, ¿la puedo dejar?',
+    'Tomo Escitalopram y clonazepam',
+    'no puedo dormir',
+    'tengo insomnio',
+    'tengo ataques de pánico',
+    'me dio un ataque de panico',
+    'tuve una crisis de pánico',
+    'siento pánico todos los días',
+    'tengo panico cuando salgo',
+    'me diagnosticaron trastorno de pánico',
+    'tengo mucho pánico',
+    'sufro de pánico',
+    'me entra el pánico en la micro',
+    'me da pánico salir porque tengo ataques de pánico',
+    // Keywords that already matched keep matching, with or without accents.
+    'Tengo ANSIEDAD',
+    'necesito una receta',
+    '¿me puede dar un diagnostico?',
+    'ya no puedo mas',
+    'quiero saber de la medicación',
+  ];
+  for (const text of clinical) {
+    assert.equal(isClinicalQuestion(text), true, text);
+    assert.equal(redactSensitiveText(text), CLINICAL_TEXT_PLACEHOLDER, text);
+  }
+
+  const administrative = [
+    'me da pánico hablar por teléfono, ¿puedo agendar por aquí?',
+    'Me da un poco de pánico la primera sesión, ¿cuánto dura?',
+    '¿Cuánto cuesta la sesión?',
+    '¿Atienden los sábados?',
+  ];
+  for (const text of administrative) {
+    assert.equal(isClinicalQuestion(text), false, text);
+    assert.equal(redactSensitiveText(text), text, text);
+  }
+});
+
+Deno.test('classifies Claude\'s clinical referral from the referral text itself', async () => {
+  for (const [reply, tipo] of [
+    [CLINICAL_REFERRAL_RESPONSE, 'clinica'],
+    [`Hola. ${CLINICAL_REFERRAL_RESPONSE}`, 'clinica'],
+    ['La atención es presencial en el consultorio.', 'administrativa'],
+  ] as const) {
+    setAnthropicClientForTests({
+      messages: { create: async () => ({ content: [{ type: 'text', text: reply }] }) },
+    } as unknown as Anthropic);
+    try {
+      const result = await generateResponse('¿Cómo es la atención?', profile);
+      assert.equal(result.tipo, tipo, reply);
+    } finally {
+      setAnthropicClientForTests(null);
+    }
   }
 });
 
@@ -1525,7 +1615,7 @@ Deno.test('never confirms an opt-in whose consent write failed', async () => {
   const dependencies = createWebhookDependencies({
     ...probe.overrides(false, 1, true),
     recordSenderConsent: (async () =>
-      false) as unknown as WebhookDependencies['recordSenderConsent'],
+      null) as unknown as WebhookDependencies['recordSenderConsent'],
   });
 
   const response = await handleWebhook(
@@ -1628,24 +1718,10 @@ Deno.test('appends consent decisions and records the shown prompt idempotently',
     },
   } as unknown as SupabaseClient;
 
-  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'wamid-1', client), true);
   assert.equal(await recordConsentPromptShown('profile-1', '+111', 'v1', 'wamid-0', client), true);
 
-  // A consent is a new row in the append-only log, never an upsert that rewrites one.
-  assert.deepEqual(writes[0], {
-    table: 'consent_events',
-    kind: 'insert',
-    payload: {
-      psicologo_id: 'profile-1',
-      numero_remitente: '+111',
-      evento: 'granted',
-      policy_version: 'v1',
-      wamid: 'wamid-1',
-      origen: 'whatsapp_acepto',
-    },
-  });
   // The first showing is kept: a repeat is ignored, not an update of shown_at.
-  assert.deepEqual(writes[1], {
+  assert.deepEqual(writes[0], {
     table: 'consent_prompts',
     kind: 'upsert',
     payload: { psicologo_id: 'profile-1', numero_remitente: '+111', policy_version: 'v1', wamid: 'wamid-0' },
@@ -1653,8 +1729,51 @@ Deno.test('appends consent decisions and records the shown prompt idempotently',
   });
 
   failWrites = true;
-  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'wamid-2', client), false);
   assert.equal(await recordConsentPromptShown('profile-1', '+111', 'v1', 'wamid-3', client), false);
+  // The grant is never written directly to the log: it goes through the locked function.
+  assert.equal(writes.some((write) => write.table === 'consent_events'), false);
+});
+
+Deno.test('records ACEPTO through the locked function and tells a refusal from a failure', async () => {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  const client = (result: { data: unknown; error: unknown }) => ({
+    rpc: async (name: string, params: Record<string, unknown>) => {
+      calls.push([name, params]);
+      return result;
+    },
+  } as unknown as SupabaseClient);
+
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'wamid-1', client({ data: true, error: null })), true);
+  assert.deepEqual(calls, [[
+    'record_sender_consent',
+    { p_psicologo_id: 'profile-1', p_numero_remitente: '+111', p_policy_version: 'v1', p_wamid: 'wamid-1' },
+  ]]);
+  // false: the consent text of that version is no longer recorded as shown.
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'w', client({ data: false, error: null })), false);
+  // null: nothing is known to be stored.
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'w', client({ data: null, error: { code: 'X' } })), null);
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'w', client({ data: 'yes', error: null })), null);
+  const throwing = { rpc: async () => { throw new Error('down'); } } as unknown as SupabaseClient;
+  assert.equal(await recordSenderConsent('profile-1', '+111', 'v1', 'w', throwing), null);
+});
+
+Deno.test('shows the consent text again when ACEPTO finds its prompt erased', async () => {
+  const prompts: string[] = [];
+  const decision = await evaluateGate('ACEPTO', '+111', profile, 'wamid-late-acepto', {
+    ...rightsStubs,
+    getSenderConsentState: consentState(false, true),
+    recordConsentPromptShown: (async (_a: string, _b: string, _c: string, wamid: string) => {
+      prompts.push(wamid);
+      return true;
+    }) as unknown as WebhookDependencies['recordConsentPromptShown'],
+    recordSenderConsent: (async () => false) as unknown as WebhookDependencies['recordSenderConsent'],
+    consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
+  });
+  assert.equal(decision.outcome, 'limited');
+  assert.ok(decision.outcome === 'limited' && decision.response.includes(renderConsentRequest(testPolicy, profile)));
+  assert.ok(decision.outcome === 'limited' && !decision.response.includes(OPT_IN_CONFIRMED_NOTICE));
+  assert.ok(decision.outcome === 'limited' && !decision.response.includes(OPT_IN_FAILED_NOTICE));
+  assert.deepEqual(prompts, ['wamid-late-acepto']);
 });
 
 Deno.test('shows the full consent text before honoring ACEPTO', async () => {
@@ -1722,6 +1841,19 @@ Deno.test('asks for no consent while no policy is published', async () => {
     assert.ok(decision.outcome === 'limited' && !decision.response.includes('ACEPTO'), text);
   }
   assert.equal(writes, 0);
+});
+
+Deno.test('names in every reply the exact command words the gate accepts', () => {
+  for (const [text, words] of [
+    [OPT_IN_CONFIRMED_NOTICE, [REVOKE_TOKEN, ERASE_TOKEN]],
+    [REVOKED_NOTICE, [ERASE_TOKEN]],
+    [NOTHING_TO_REVOKE_NOTICE, [ERASE_TOKEN]],
+    [consentReminder(testPolicy), [OPT_IN_TOKENS[0]]],
+  ] as const) {
+    for (const word of words) assert.ok(text.includes(word), `${word} missing from: ${text}`);
+  }
+  // And each named word is one the gate acts on.
+  assert.ok(isOptInToken(OPT_IN_TOKENS[0]));
 });
 
 Deno.test('writes the consent replies in neutral Spanish', () => {
@@ -1961,19 +2093,24 @@ Deno.test('ELIMINAR erases the sender data and reports failure honestly', async 
     [null, RIGHTS_FAILED_NOTICE],
   ] as const) {
     const probe = createGateProbe();
-    const calls: Array<[string, string, string]> = [];
+    const calls: Array<[string, string, string, string]> = [];
     const dependencies = createWebhookDependencies({
       ...probe.overrides(true),
-      eraseSenderData: (async (psicologoId: string, sender: string, wamid: string) => {
-        calls.push([psicologoId, sender, wamid]);
+      eraseSenderData: (async (psicologoId: string, sender: string, wamid: string, windowStart: string) => {
+        calls.push([psicologoId, sender, wamid, windowStart]);
         return erased;
       }) as unknown as WebhookDependencies['eraseSenderData'],
     });
 
+    const before = rateLimitWindowStart();
     const response = await handleWebhook(await buildWebhookRequest('¡ELIMINAR!', 'wamid-eliminar'), dependencies);
+    const after = rateLimitWindowStart();
 
     assert.equal(response.status, 200);
-    assert.deepEqual(calls, [[profile.id, '+111', 'wamid-eliminar']]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(0, 3), [profile.id, '+111', 'wamid-eliminar']);
+    // The counter of the current window is the one ELIMINAR keeps.
+    assert.ok(calls[0][3] === before || calls[0][3] === after, calls[0][3]);
     assert.deepEqual(probe.sentTexts, [expected]);
     assert.deepEqual(probe.completedWamids, ['wamid-eliminar']);
     assert.equal(probe.claudeCalls, 0);
@@ -2014,15 +2151,19 @@ Deno.test('calls the rights functions with the sender key and reports failure as
     },
   } as unknown as SupabaseClient);
   const params = { p_psicologo_id: 'profile-1', p_numero_remitente: '+111', p_wamid: 'wamid-1' };
+  const window = '2026-01-01T10:00:00.000Z';
 
   assert.equal(await revokeSenderConsent('profile-1', '+111', 'wamid-1', client({ data: true, error: null })), true);
-  assert.equal(await eraseSenderData('profile-1', '+111', 'wamid-1', client({ data: false, error: null })), false);
-  assert.deepEqual(calls, [['revoke_sender_consent', params], ['erase_sender_data', params]]);
+  assert.equal(await eraseSenderData('profile-1', '+111', 'wamid-1', window, client({ data: false, error: null })), false);
+  assert.deepEqual(calls, [
+    ['revoke_sender_consent', params],
+    ['erase_sender_data', { ...params, p_rate_window_started_at: window }],
+  ]);
 
   assert.equal(await revokeSenderConsent('profile-1', '+111', 'w', client({ data: null, error: { code: 'X' } })), null);
-  assert.equal(await eraseSenderData('profile-1', '+111', 'w', client({ data: 'yes', error: null })), null);
+  assert.equal(await eraseSenderData('profile-1', '+111', 'w', window, client({ data: 'yes', error: null })), null);
   const throwing = { rpc: async () => { throw new Error('down'); } } as unknown as SupabaseClient;
-  assert.equal(await eraseSenderData('profile-1', '+111', 'w', throwing), null);
+  assert.equal(await eraseSenderData('profile-1', '+111', 'w', window, throwing), null);
 });
 
 Deno.test('a failed consent read is reported as temporary and records nothing', async () => {

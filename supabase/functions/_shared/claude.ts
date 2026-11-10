@@ -19,13 +19,17 @@ function getEnv(name: string): string {
   }
 }
 
+// The phrase that identifies the referral in Claude's reply. The response is built from
+// it, so changing the wording cannot silently break isClinicalRefusal.
+const CLINICAL_REFERRAL_MARKER = 'atención directa';
+
 /**
  * The only answer to a clinical question, from the router and from Claude alike.
  * Nobody monitors this channel, so it must not promise that the professional will
  * follow up: it points the patient to a channel that reaches a person.
  */
 export const CLINICAL_REFERRAL_RESPONSE =
-  'Esta consulta requiere atención directa con tu psicólogo/a y por este medio no puedo derivarla. Escríbele por tu canal habitual o agenda una cita.';
+  `Esta consulta requiere ${CLINICAL_REFERRAL_MARKER} con tu psicólogo/a y por este medio no puedo derivarla. Escríbele por tu canal habitual o agenda una cita.`;
 
 function getSystemPrompt(psicologo: Psicologo): string {
   const hours = psicologo.horarios?.trim();
@@ -97,7 +101,7 @@ function removeSchedulingLinks(text: string, profileLink: string): string {
 }
 
 function isClinicalRefusal(text: string): boolean {
-  return text.toLowerCase().includes('atención directa');
+  return text.toLowerCase().includes(CLINICAL_REFERRAL_MARKER.toLowerCase());
 }
 
 function toClaudeMessages(

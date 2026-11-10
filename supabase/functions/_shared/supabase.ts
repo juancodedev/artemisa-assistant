@@ -16,7 +16,6 @@ const PROFILE_FALLBACK_LOOKUP_LIMIT = 2;
 const CONVERSATIONS_TABLE = 'conversaciones';
 const CONVERSATION_CONFLICT_TARGET = 'psicologo_id,numero_paciente';
 const CONSENT_PROMPTS_TABLE = 'consent_prompts';
-const CONSENT_EVENTS_TABLE = 'consent_events';
 const RATE_BUCKETS_TABLE = 'sender_rate_buckets';
 // The conflict target below must match a real constraint, not a bare index, so
 // PostgREST can build the ON CONFLICT clause. Migration 007 declares it as the
@@ -26,6 +25,7 @@ const CONSENT_PROMPT_CONFLICT_TARGET = 'psicologo_id,numero_remitente,policy_ver
 const CONSENT_STATE_FUNCTION = 'get_sender_consent_state';
 // Sender rights functions created by migration 008.
 const REVOKE_CONSENT_FUNCTION = 'revoke_sender_consent';
+const RECORD_CONSENT_FUNCTION = 'record_sender_consent';
 const ERASE_DATA_FUNCTION = 'erase_sender_data';
 // Name of the atomic increment function created by migration 006.
 const RATE_LIMIT_SLOT_FUNCTION = 'consume_sender_rate_limit_slot';
@@ -517,9 +517,14 @@ export async function recordConsentPromptShown(
 }
 
 /**
- * Append a granted consent for a policy version to the consent log. The log is
- * append-only, so a later revocation is another row, never an edit of this one.
- * Never throws; false means the consent was NOT stored and must not be confirmed.
+ * ACEPTO: append a granted consent for a policy version through record_sender_consent
+ * (migration 009). The function takes the same per-sender lock as BAJA and ELIMINAR,
+ * so a grant can never land after an erasure, and it refuses the grant when the text
+ * of that version is no longer recorded as shown (ELIMINAR deletes it).
+ *
+ * Returns true when the consent was stored, false when it was refused because the text
+ * was not shown, and null when nothing is known to be stored. Never throws; only true
+ * may be confirmed to the sender.
  */
 export async function recordSenderConsent(
   psicologoId: string,
@@ -527,25 +532,22 @@ export async function recordSenderConsent(
   policyVersion: string,
   wamid: string,
   client: SupabaseClient = getSupabaseClient()
-): Promise<boolean> {
+): Promise<boolean | null> {
   try {
-    const { error } = await client.from(CONSENT_EVENTS_TABLE).insert({
-      psicologo_id: psicologoId,
-      numero_remitente: senderNumber,
-      evento: 'granted',
-      policy_version: policyVersion,
-      wamid,
-      origen: 'whatsapp_acepto',
+    const { data, error } = await client.rpc(RECORD_CONSENT_FUNCTION, {
+      p_psicologo_id: psicologoId,
+      p_numero_remitente: senderNumber,
+      p_policy_version: policyVersion,
+      p_wamid: wamid,
     });
-
-    if (error) {
-      console.error('Error recording sender consent');
-      return false;
+    if (error || typeof data !== 'boolean') {
+      console.error('Error recording sender consent', { code: error?.code ?? 'unexpected_result' });
+      return null;
     }
-    return true;
+    return data;
   } catch {
     console.error('Exception in recordSenderConsent');
-    return false;
+    return null;
   }
 }
 
@@ -615,9 +617,9 @@ export async function revokeSenderConsent(
 
 /**
  * ELIMINAR: withdraw consent and delete the sender's conversation, prompts and rate
- * counters through erase_sender_data (migration 008). The consent log is kept, and so
- * are rate counters from the last two hours, so ELIMINAR cannot reset the rate limit;
- * the retention purge removes them within a day.
+ * counters through erase_sender_data (migration 009). The consent log is kept, and so
+ * is the counter of the current rate-limit window, `rateWindowStartedAt`, so ELIMINAR
+ * cannot reset the rate limit; the retention purge removes it within a day.
  *
  * Returns true when a consent was also withdrawn, false when there was none, and null
  * when nothing could be erased. Never throws.
@@ -626,9 +628,12 @@ export async function eraseSenderData(
   psicologoId: string,
   senderNumber: string,
   wamid: string,
+  rateWindowStartedAt: string,
   client: SupabaseClient = getSupabaseClient()
 ): Promise<boolean | null> {
-  return await callRightsFunction(ERASE_DATA_FUNCTION, psicologoId, senderNumber, wamid, client);
+  return await callRightsFunction(ERASE_DATA_FUNCTION, psicologoId, senderNumber, wamid, client, {
+    p_rate_window_started_at: rateWindowStartedAt,
+  });
 }
 
 async function callRightsFunction(
@@ -636,16 +641,18 @@ async function callRightsFunction(
   psicologoId: string,
   senderNumber: string,
   wamid: string,
-  client: SupabaseClient
+  client: SupabaseClient,
+  extraParams: Record<string, unknown> = {}
 ): Promise<boolean | null> {
   try {
     const { data, error } = await client.rpc(name, {
       p_psicologo_id: psicologoId,
       p_numero_remitente: senderNumber,
       p_wamid: wamid,
+      ...extraParams,
     });
     if (error || typeof data !== 'boolean') {
-      // The code alone tells a missing function (deployed before migration 008) apart
+      // The code alone tells a missing function (deployed before its migration) apart
       // from an outage.
       console.error(`Error calling ${name}`, { code: error?.code ?? 'unexpected_result' });
       return null;

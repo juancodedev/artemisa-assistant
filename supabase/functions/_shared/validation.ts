@@ -83,22 +83,39 @@ export function isCrisisSignal(message: string): boolean {
   return CRISIS_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+// Clinical keywords, compared against the message lowercased and without accents, so
+// each one is written once, without accents. Detection is a heuristic: it lowers what
+// reaches Claude and storage, and a message it misses still goes through as written.
+//
+// "panico" is handled apart, below: "me da pánico hablar por teléfono" is an
+// administrative question, while "tengo mucho pánico" discloses a symptom.
+const CLINICAL_KEYWORDS: readonly string[] = [
+  // Symptoms and states.
+  'me duele', 'me siento mal', 'sintoma', 'ansiedad', 'depresion', 'deprimid',
+  'angustia', 'lloro', 'no puedo mas', 'desesperad', 'no puedo dormir', 'insomnio',
+  // Treatment.
+  'medicamento', 'medicacion', 'pastilla', 'receta', 'psiquiatra', 'diagnostico',
+  'antidepresiv', 'ansiolitic',
+  // Psychiatric medication commonly prescribed in Chile.
+  'sertralina', 'fluoxetina', 'escitalopram', 'paroxetina', 'venlafaxina',
+  'clonazepam', 'alprazolam', 'lorazepam', 'zolpidem', 'quetiapina',
+  // Risk words; crisis phrasing proper is caught first by isCrisisSignal.
+  'emergencia', 'suicid', 'autolesion', 'hacerme dano', 'morir',
+];
+
 /**
  * Check if a message contains clinical/medical symptoms or psychological issues.
  * Never answers clinical questions directly - always delegates to the professional.
  */
 export function isClinicalQuestion(message: string): boolean {
-  const clinicalKeywords = [
-    'me duele', 'me siento mal', 'sintoma', 'síntoma', 'sintomas', 'síntomas',
-    'ansiedad', 'depresion', 'depresión', 'medicamento', 'medicamentos',
-    'medicación', 'medicacion', 'pastilla', 'pastillas', 'receta',
-    'psiquiatra', 'diagnostico', 'diagnóstico', 'emergencia',
-    'suicid', 'autolesion', 'autolesión', 'hacerme daño', 'morir',
-    'panico', 'pánico', 'crisis de angustia',
-    'angustia', 'lloro', 'no puedo mas', 'no puedo más', 'desesperad'
-  ];
-  const lowerMsg = message.toLowerCase();
-  return clinicalKeywords.some(kw => lowerMsg.includes(kw));
+  const normalized = message
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (CLINICAL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return true;
+  // Any mention of panic counts, except the everyday "(me) da pánico". The everyday
+  // phrases are removed first, so one of them cannot hide another mention.
+  return /panico/.test(normalized.replace(/\bdan? (?:(?:un poco de|algo de|mucho) )?panico\b/g, ''));
 }
 
 export const CRISIS_TEXT_PLACEHOLDER = '[mensaje de crisis omitido]';
