@@ -1,5 +1,6 @@
 // supabase/functions/_shared/gate.ts
-// Sender admission gate: crisis handling, rate limiting, and explicit opt-in consent.
+// Sender admission gate: sender rights (BAJA, ELIMINAR), rate limiting, and informed,
+// versioned opt-in consent.
 //
 // The business number answers any sender that reaches it, so this module decides what
 // a given sender is allowed to cost before the webhook spends anything. It answers one
@@ -9,11 +10,14 @@
 import { greetingResponse, routeDeterministicMessage } from './router.ts';
 import {
   consumeRateLimitSlot,
-  hasSenderConsent,
+  eraseSenderData,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
 } from './supabase.ts';
-import { Psicologo } from './types.ts';
-import { isCrisisSignal, normalizePhoneNumber, sanitizeInput } from './validation.ts';
+import { ConsentPolicy, Psicologo } from './types.ts';
+import { normalizePhoneNumber, sanitizeInput } from './validation.ts';
 
 // ---------------------------------------------------------------------------
 // Tunable product defaults
@@ -48,18 +52,15 @@ export const CONSENTED_HOURLY_CEILING = 60;
 // which is an acceptable trade for a single atomic statement.
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
-// Opt-in phrases, compared after uppercasing, accent stripping and whitespace
-// collapsing. "SI" is included without an accent because an accented "SÍ" collapses to
-// it and an unaccented "SI" is a legitimate typo of the same answer.
-//
-// Tradeoff: "OK" and "SI" are short enough to appear incidentally in an unrelated
-// message, which would record a consent nobody meant to give. They are kept because
-// the cost of that mistake is one row that a DELETE revokes, while the cost of NOT
-// recognizing a plainly consenting sender is that they are stuck on the deterministic
-// path with no way to explain why. Deliberately absent: "hola", which must stay an
-// ordinary greeting, and any free-text form, because a consent prompt that accepts
-// anything is not consent.
-export const OPT_IN_TOKENS: readonly string[] = ['QUIERO', 'SI', 'ACCEPTO', 'OK', 'DE ACUERDO'];
+// The only opt-in word, compared after uppercasing, accent stripping and whitespace
+// collapsing. Health data needs explicit consent, so a short reply that can appear
+// incidentally ("ok", "si") must never count as one, and the consent text names this
+// exact word.
+export const OPT_IN_TOKENS: readonly string[] = ['ACEPTO'];
+
+// Rights requests, matched the same way. They are the words the consent text names.
+export const REVOKE_TOKEN = 'BAJA';
+export const ERASE_TOKEN = 'ELIMINAR';
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -69,19 +70,41 @@ export const OPT_IN_TOKENS: readonly string[] = ['QUIERO', 'SI', 'ACCEPTO', 'OK'
 // user-facing string and deliberately not a generated answer.
 // ---------------------------------------------------------------------------
 
-export const CONSENT_REQUEST =
-  'Para responderte consultas abiertas y recordar esta conversación necesito tu consentimiento. Respondé QUIERO para aceptarlo. Mientras tanto podés consultarme por precios, horarios, ubicación y cómo agendar una cita.';
+// Served when no consent policy is published: nobody can consent, so the sender is
+// told what the bot can still answer instead of being asked for a consent it cannot
+// record.
+export const CONSENT_UNAVAILABLE_NOTICE =
+  'Por ahora solo puedo responder consultas sobre precios, horarios, ubicación y cómo agendar una cita.';
 
 export const RATE_LIMIT_RESPONSE =
-  'Recibí demasiados mensajes en la última hora. Por favor intentá de nuevo en un rato. Si necesitás hablar con tu psicólogo/a, podés contactarlo/la directamente.';
+  'Recibí demasiados mensajes en la última hora. Por favor, intenta de nuevo más tarde. Si necesitas hablar con tu psicólogo/a, comunícate directamente.';
 
 export const OPT_IN_CONFIRMED_NOTICE =
-  'Perfecto, registré tu consentimiento. Ya puedo responderte consultas abiertas y recordar esta conversación.';
+  'Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee. Escribe BAJA para retirar tu autorización o ELIMINAR para borrar tu historial.';
 
 // Served instead of the confirmation when the consent write failed, so the sender is
 // never told a consent that was not stored and cannot tell that apart from being ignored.
 export const OPT_IN_FAILED_NOTICE =
-  'No pude registrar tu consentimiento en este momento. Por favor intentá de nuevo en un rato.';
+  'No pude registrar tu autorización en este momento. Por favor, intenta de nuevo más tarde.';
+
+// Served when the consent state could not be read. The sender is kept on the
+// deterministic path, and told it is temporary rather than that consent is unavailable.
+export const CONSENT_CHECK_FAILED_NOTICE =
+  'No pude verificar tu autorización en este momento, así que por ahora solo puedo responder consultas sobre precios, horarios, ubicación y cómo agendar una cita. Por favor, intenta de nuevo más tarde.';
+
+export const REVOKED_NOTICE =
+  'Listo, retiré tu autorización. Ya no guardaré esta conversación ni responderé consultas abiertas. Si quieres borrar también tu historial, escribe ELIMINAR.';
+
+export const NOTHING_TO_REVOKE_NOTICE =
+  'No tenías una autorización activa, así que no hay nada que retirar. Si quieres borrar los datos asociados a tu número, escribe ELIMINAR.';
+
+export const ERASED_NOTICE =
+  'Listo, borré tu historial y los datos asociados a tu número, y retiré tu autorización si la tenías. Solo conservo la constancia de tus autorizaciones, como respaldo.';
+
+// Served when a BAJA or ELIMINAR could not be processed, so the sender is never told a
+// right was exercised when it was not.
+export const RIGHTS_FAILED_NOTICE =
+  'No pude procesar tu solicitud en este momento. Por favor, intenta de nuevo más tarde.';
 
 // Served to a CONSENTED sender when the rate-limit counter could not be read or
 // written. For a consented sender the counter is the only per-sender ceiling on Claude
@@ -89,7 +112,7 @@ export const OPT_IN_FAILED_NOTICE =
 // entirely for exactly the sender who can spend the most. Saying so honestly is
 // better than serving unbounded generated answers.
 export const DEGRADED_SERVICE_RESPONSE =
-  'No puedo verificar tu límite de mensajes en este momento, así que pause la conversación por seguridad. Por favor intentá de nuevo en un rato o contactá directamente a tu psicólogo/a.';
+  'No puedo verificar tu límite de mensajes en este momento, así que pausé la conversación por seguridad. Por favor, intenta de nuevo más tarde o comunícate directamente con tu psicólogo/a.';
 
 // ---------------------------------------------------------------------------
 // Decision
@@ -97,14 +120,18 @@ export const DEGRADED_SERVICE_RESPONSE =
 
 /**
  * Why the gate allowed a message through.
- * - crisis:   a crisis signal, which is never gated (see evaluateGate).
  * - consented: the sender already opted in for this psychologist.
  */
-export type GateAllowReason = 'crisis' | 'consented';
+export type GateAllowReason = 'consented';
 
 export type GateDecision =
   /** Continue into the full existing pipeline, unchanged. Carries no reply. */
   | { outcome: 'allow'; reason: GateAllowReason }
+  /**
+   * A BAJA or ELIMINAR was handled (or honestly failed). Send `response` and mark
+   * completed. No Claude, no history.
+   */
+  | { outcome: 'rights'; response: string }
   /** Sender is over the ceiling. Send `response` and mark completed. No retry. */
   | { outcome: 'rate_limited'; response: string }
   /**
@@ -120,14 +147,20 @@ export type GateDecision =
   | { outcome: 'degraded'; response: string };
 
 export interface GateDependencies {
-  hasSenderConsent: typeof hasSenderConsent;
+  getSenderConsentState: typeof getSenderConsentState;
+  recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
+  revokeSenderConsent: typeof revokeSenderConsent;
+  eraseSenderData: typeof eraseSenderData;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
 const defaultDependencies: GateDependencies = {
-  hasSenderConsent,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
+  eraseSenderData,
   consumeRateLimitSlot,
 };
 
@@ -146,7 +179,10 @@ function normalizeForTokenMatch(value: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    // A period or exclamation marks ("BAJA.", "¡acepto!") do not change the word, but
+    // a question mark does: "¿Acepto?" asks what accepting means and is not consent.
+    .replace(/^[¡!.\s]+|[!.\s]+$/g, '');
 }
 
 const NORMALIZED_OPT_IN_TOKENS = new Set(OPT_IN_TOKENS.map(normalizeForTokenMatch));
@@ -168,56 +204,70 @@ export function rateLimitWindowStart(now: number = Date.now()): string {
   return new Date(Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS).toISOString();
 }
 
-/** The deterministic answer, or the greeting, followed by the explicit consent request. */
-function limitedResponse(cleanMessage: string, psicologo: Psicologo): string {
+/** The full consent text of a policy, rendered for this psychologist, with its link. */
+export function renderConsentRequest(policy: ConsentPolicy, psicologo: Psicologo): string {
+  const text = policy.texto.replaceAll('{profesional}', psicologo.nombre);
+  return `${text}\n\nPolítica de privacidad completa: ${policy.url}`;
+}
+
+/** The short reminder served once the full consent text has already been shown. */
+export function consentReminder(policy: ConsentPolicy): string {
+  return `Para que pueda responder consultas abiertas, responde ACEPTO. Antes, revisa la política de privacidad: ${policy.url}`;
+}
+
+/** The deterministic answer, or the greeting, when nothing deterministic matched. */
+function deterministicAnswer(cleanMessage: string, psicologo: Psicologo): string {
   // A message with no deterministic match, and an empty message, both land on the
   // greeting: it names exactly what the sender may ask about, which is the listing
   // information a prospective patient needs, and it makes no Claude call.
-  const base = routeDeterministicMessage(cleanMessage, psicologo) ?? greetingResponse(psicologo);
-  return `${base.contenido}\n\n${CONSENT_REQUEST}`;
+  return (routeDeterministicMessage(cleanMessage, psicologo) ?? greetingResponse(psicologo)).contenido;
 }
 
 /**
  * Decide what a sender is allowed to reach, in a fixed order.
  *
- * WHY CRISIS IS EVALUATED FIRST, BEFORE THE RATE LIMIT AND BEFORE CONSENT
- * 1. The crisis branch makes no Claude call. It is a string comparison against a
- *    keyword list plus a constant response, so gating it protects no budget at all.
- * 2. Gating it would create real, concrete harm. A person writing for the first time
- *    about killing themselves and receiving "respondé QUIERO" instead of the
- *    suicide-prevention line would be sent away from the only help offered.
- * 3. The cost of putting it first is therefore close to zero, while the cost of putting
- *    it anywhere later is a life-safety regression.
- * Because a person in crisis is exactly the person most likely to send several
- * messages in a row, this ordering also means the rate limit can never be what stands
- * between that person and the crisis response. DO NOT "optimize" this check into a
- * later branch: it is a safety ordering, not a performance choice.
+ * Crisis signals never reach this gate: the webhook answers them first, ahead of the
+ * rate limit, consent, and every other database read (see handleCrisisMessage).
  *
- * @param rawText    The inbound message text, sanitized here before any decision.
+ * @param rawText   The inbound message text, sanitized here before any decision.
  * @param senderNumber The sender's WhatsApp number; normalized once and used as the
  *                   consent and rate-limit key for every branch below, so the gate can
  *                   never consult two different identities for one sender.
  * @param psicologo  The resolved profile, used for the reply copy and as the tenant
  *                   that consent and the rate limit are scoped to.
+ * @param wamid      The inbound message id, recorded with every consent decision so it
+ *                   can be traced to the message that carried it.
  */
 export async function evaluateGate(
   rawText: string,
   senderNumber: string,
   psicologo: Psicologo,
+  wamid: string,
   dependencies: GateDependencies = defaultDependencies
 ): Promise<GateDecision> {
   const cleanMessage = sanitizeInput(rawText);
 
-  // 1. Crisis. Never gated. See the ordering note above.
-  if (isCrisisSignal(cleanMessage)) {
-    return { outcome: 'allow', reason: 'crisis' };
-  }
-
   // One identity for consent and for the rate limit, both scoped to this psychologist.
   const senderKey = normalizePhoneNumber(senderNumber);
-  const consented = await dependencies.hasSenderConsent(psicologo.id, senderKey);
 
-  // 2. Rate limit. The ceiling depends on consent state, so consent is resolved first
+  // 0. Rights requests, before the rate limit and before consent: exercising a right
+  //    must never depend on having consented or on how many messages were sent.
+  const command = normalizeForTokenMatch(cleanMessage);
+  if (command === REVOKE_TOKEN) {
+    const revoked = await dependencies.revokeSenderConsent(psicologo.id, senderKey, wamid);
+    const response =
+      revoked === null ? RIGHTS_FAILED_NOTICE : revoked ? REVOKED_NOTICE : NOTHING_TO_REVOKE_NOTICE;
+    return { outcome: 'rights', response };
+  }
+  if (command === ERASE_TOKEN) {
+    const erased = await dependencies.eraseSenderData(psicologo.id, senderKey, wamid);
+    return { outcome: 'rights', response: erased === null ? RIGHTS_FAILED_NOTICE : ERASED_NOTICE };
+  }
+
+  const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
+  const { consented, policy } = consentState;
+
+  // 1. Rate limit. The ceiling depends on consent state, so consent is resolved first
   //    even though deciding to charge a slot is not what makes a sender "consented".
   const ceiling = consented ? CONSENTED_HOURLY_CEILING : NON_CONSENTED_HOURLY_CEILING;
   const messageCount = await dependencies.consumeRateLimitSlot(
@@ -248,22 +298,34 @@ export async function evaluateGate(
     return { outcome: 'rate_limited', response: RATE_LIMIT_RESPONSE };
   }
 
-  // 3. Consented: the full existing pipeline, unchanged.
+  // 2. Consented to the policy in force: the full existing pipeline, unchanged.
   if (consented) {
     return { outcome: 'allow', reason: 'consented' };
   }
 
-  // 4. Explicit opt-in. Consent is recorded, then confirmed with the greeting. No
-  //    Claude call and no conversation row: the greeting is fully self-contained, so
-  //    nothing is lost by not persisting the token that granted consent.
+  const answer = deterministicAnswer(cleanMessage, psicologo);
+
+  // 3a. The consent state could not be read: say so, and ask nothing.
+  if (consentState.lookupFailed) {
+    return { outcome: 'limited', response: `${answer}\n\n${CONSENT_CHECK_FAILED_NOTICE}` };
+  }
+
+  // 3b. No published policy: nobody can consent, so no consent is requested either.
+  if (!policy) {
+    return { outcome: 'limited', response: `${answer}\n\n${CONSENT_UNAVAILABLE_NOTICE}` };
+  }
+
+  // 4. Explicit opt-in, honored only after the sender was shown THIS policy's text.
+  //    Consent to a text nobody saw is not informed, so an ACEPTO that arrives first
+  //    gets the full text instead. No Claude call and no conversation row.
   //
   //    The write result decides the reply: a failed write reports as `limited` with an
   //    honest reason, never a confirmation that did not happen.
-  if (isOptInToken(cleanMessage)) {
-    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey))) {
+  if (isOptInToken(cleanMessage) && consentState.promptShown) {
+    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey, policy.version, wamid))) {
       return {
         outcome: 'limited',
-        response: `${OPT_IN_FAILED_NOTICE}\n\n${CONSENT_REQUEST}`,
+        response: `${OPT_IN_FAILED_NOTICE}\n\n${consentReminder(policy)}`,
       };
     }
     return {
@@ -272,7 +334,16 @@ export async function evaluateGate(
     };
   }
 
-  // 5. Unconsented and not opting in: the deterministic answer plus the consent
-  //    request. No Claude, no history, no conversation row.
-  return { outcome: 'limited', response: limitedResponse(cleanMessage, psicologo) };
+  // 5. Unconsented: the deterministic answer plus the consent request. The full text
+  //    the first time for this policy, a short reminder after that. No Claude, no
+  //    history, no conversation row. A failed prompt record only means the full text
+  //    is shown again next time, so it never changes the reply.
+  if (consentState.promptShown) {
+    return { outcome: 'limited', response: `${answer}\n\n${consentReminder(policy)}` };
+  }
+  await dependencies.recordConsentPromptShown(psicologo.id, senderKey, policy.version, wamid);
+  return {
+    outcome: 'limited',
+    response: `${answer}\n\n${renderConsentRequest(policy, psicologo)}`,
+  };
 }

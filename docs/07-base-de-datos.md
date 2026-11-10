@@ -65,4 +65,4 @@ Existe un índice por `status` y `processing_started_at`. La tabla registra el e
 
 ## Privacidad y trabajo futuro
 
-La Fase 1 no implementa consentimiento, retención, exportación ni eliminación. Tampoco hay Google Auth ni propiedad por usuario. La Fase 2 debe agregar políticas RLS que vinculen `psicologos` con su propietario y defina acceso autorizado a `conversaciones`; no se debe habilitar un acceso directo de cliente como sustituto de esa capa.
+Las migraciones 007 y 008 agregan el consentimiento versionado, el registro de consentimiento de solo inserción, `BAJA`, `ELIMINAR` y la función de borrado por retención (ver `docs/09-privacidad-y-consentimiento.md`). No hay exportación. Tampoco hay Google Auth ni propiedad por usuario. La Fase 2 debe agregar políticas RLS que vinculen `psicologos` con su propietario y defina acceso autorizado a `conversaciones`; no se debe habilitar un acceso directo de cliente como sustituto de esa capa.

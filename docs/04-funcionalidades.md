@@ -39,7 +39,8 @@ El texto exacto, las palabras clave y las aserciones de seguridad se definen en 
 
 - `conversaciones` almacena número de paciente e historial.
 - La ruta de crisis redacta el texto del paciente antes de persistirlo.
-- No existe flujo de consentimiento, retención o eliminación.
+- Consentimiento versionado por WhatsApp (`ACEPTO`), retiro (`BAJA`), borrado (`ELIMINAR`) y borrado automático tras 90 días sin actividad (ver `docs/09-privacidad-y-consentimiento.md`). No hay exportación de datos.
+- Los mensajes clínicos o de crisis se guardan como un marcador y nunca se envían a Claude.
 - La detección de crisis es heurística y no constituye evaluación clínica.
 - El acceso de la aplicación usa `service_role` desde el servidor y bypassa RLS.
 - La función `send-message` exige el secreto interno y rechaza solicitudes públicas.

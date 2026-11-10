@@ -3,7 +3,7 @@
 
 import { Anthropic } from '@anthropic-ai/sdk';
 import { MensajeHistoria, Psicologo, RespuestaBot, TipoConsulta } from './types.ts';
-import { isSchedulingRequest } from './validation.ts';
+import { isSchedulingRequest, redactSensitiveText } from './validation.ts';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 400;
@@ -19,13 +19,21 @@ function getEnv(name: string): string {
   }
 }
 
+/**
+ * The only answer to a clinical question, from the router and from Claude alike.
+ * Nobody monitors this channel, so it must not promise that the professional will
+ * follow up: it points the patient to a channel that reaches a person.
+ */
+export const CLINICAL_REFERRAL_RESPONSE =
+  'Esta consulta requiere atención directa con tu psicólogo/a y por este medio no puedo derivarla. Escríbele por tu canal habitual o agenda una cita.';
+
 function getSystemPrompt(psicologo: Psicologo): string {
   const hours = psicologo.horarios?.trim();
   const hoursText = hours || 'No hay horarios de atención disponibles en los datos del consultorio.';
 
-  return `Sos la Secretaria Virtual de ${psicologo.nombre}, profesional de la psicología. Tu única función es responder preguntas administrativas sobre el consultorio de ${psicologo.nombre}.
+  return `Eres la Secretaria Virtual de ${psicologo.nombre}, profesional de la psicología. Tu única función es responder preguntas administrativas sobre el consultorio de ${psicologo.nombre}.
 
-Respondé siempre con un tono cálido, profesional y respetuoso en español natural.
+Responde siempre con un tono cálido, profesional y respetuoso, en español neutro y tuteando, sin voseo.
 
 DATOS DEL/DE LA PROFESIONAL:
 - Nombre: ${psicologo.nombre}
@@ -37,10 +45,11 @@ DATOS DEL/DE LA PROFESIONAL:
 - Horarios: ${hoursText}
 
 REGLAS ESTRICTAS:
-1. Solo respondé dudas administrativas: horarios, honorarios/precios, ubicación, modalidad de atención, obras sociales y cómo reservar turno.
-2. Si te consultan por temas clínicos, síntomas, diagnósticos, medicación, crisis emocionales o salud mental: NO des consejos ni diagnósticos. Respondé textualmente: "Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad."
+1. Solo responde dudas administrativas: horarios, honorarios/precios, ubicación, modalidad de atención, sistemas de salud y cómo reservar una cita.
+2. Si te consultan por temas clínicos, síntomas, diagnósticos, medicación, crisis emocionales o salud mental: NO des consejos ni diagnósticos. Responde textualmente: "${CLINICAL_REFERRAL_RESPONSE}"
 3. No incluyas ningún link de agenda en la respuesta. El link se entrega únicamente cuando el paciente escribe una solicitud explícita de agendar o reservar.
-4. Nunca inventes información que no esté en la ficha. Si no sabés un dato, decí que no contás con esa información y que lo consulte directamente con la profesional.`;
+4. Nunca inventes información que no esté en la ficha. Si no sabes un dato, di que no cuentas con esa información y que la consulte directamente con la profesional.
+5. Nunca prometas que la profesional se pondrá en contacto: nadie lee este canal.`;
 }
 
 let clientInstance: Anthropic | null = null;
@@ -70,7 +79,7 @@ export function setAnthropicClientForTests(client: Anthropic | null): void {
 function getFallbackResponse(psicologo: Psicologo): RespuestaBot {
   return {
     tipo: 'administrativa',
-    contenido: `Gracias por tu mensaje. ${psicologo.nombre} revisará tu consulta a la brevedad. Podés consultar por horarios, honorarios, ubicación o agendar tu cita.`,
+    contenido: `Gracias por tu mensaje. Por ahora no pude procesar tu consulta. Puedes preguntarme por horarios, honorarios, ubicación o cómo agendar una cita; para otros temas, comunícate directamente con ${psicologo.nombre}.`,
   };
 }
 
@@ -88,8 +97,7 @@ function removeSchedulingLinks(text: string, profileLink: string): string {
 }
 
 function isClinicalRefusal(text: string): boolean {
-  const lowerText = text.toLowerCase();
-  return lowerText.includes('atención directa') || lowerText.includes('contactará a la brevedad');
+  return text.toLowerCase().includes('atención directa');
 }
 
 function toClaudeMessages(
@@ -97,9 +105,11 @@ function toClaudeMessages(
   currentMessage: string
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   return [
+    // Redacted here as well as on write: history stored before redaction existed may
+    // still hold raw clinical text, and this is the only path to Claude.
     ...history.map((item) => ({
       role: item.role,
-      content: item.content,
+      content: item.role === 'user' ? redactSensitiveText(item.content) : item.content,
     })),
     { role: 'user' as const, content: currentMessage },
   ];
@@ -128,7 +138,7 @@ export function quickAdminAnswer(message: string, psicologo: Psicologo): string 
   ) {
     return psicologo.horarios?.trim()
       ? `Los horarios de atención son: ${psicologo.horarios.trim()}.`
-      : `No cuento con horarios de atención disponibles en la información del consultorio. Consultalos directamente con ${psicologo.nombre}.`;
+      : `No cuento con horarios de atención disponibles en la información del consultorio. Consúltalos directamente con ${psicologo.nombre}.`;
   }
 
   if (
@@ -227,7 +237,7 @@ export async function generateResponse(
     console.error('Claude API request failed');
     return {
       tipo: 'administrativa',
-      contenido: `Gracias por comunicarte. En este momento el sistema está procesando tu consulta; ${psicologo.nombre} te responderá a la brevedad.`,
+      contenido: `Gracias por comunicarte. En este momento no pude procesar tu consulta. Por favor, intenta de nuevo más tarde o comunícate directamente con ${psicologo.nombre}.`,
     };
   }
 }

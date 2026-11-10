@@ -35,30 +35,52 @@ export function normalizePhoneNumber(number: string): string {
   return clean.startsWith('+') ? clean : `+${clean}`;
 }
 
+// Matched against lowercased text with accents removed, so patterns are written
+// without accents. Leaning towards a match is deliberate: a false positive costs the
+// patient's request, a false negative leaves a person in crisis without the helpline.
+// So the two phrases that are also everyday idioms match by default, and only their
+// known idiomatic continuations are excluded: "me mato estudiando", "terminar con todo
+// el papeleo" (a chore, not a determiner, is what makes it everyday speech).
+// "Esta noche me mato", "terminar con todo esto" and "acabar con todo mi dolor" still
+// match, and so do continuations with a preposition, as in "me mato con las pastillas".
+const CRISIS_PATTERNS: readonly RegExp[] = [
+  /suicid/,
+  /\bmatarme\b/,
+  /\bme (?:quiero|voy a|gustaria|quisiera|pienso) matar\b/,
+  /\bme mato\b(?!\s+(?:estudiando|trabajando|haciendo|corriendo|entrenando|de (?:la )?risa)\b)/,
+  /\bquitarme la vida\b/,
+  /\bme (?:quiero|voy a|pienso|quisiera) quitar la vida\b/,
+  /\b(?:acabar|terminar) con mi vida\b/,
+  // Only administrative chores are excluded, so "con todo mi dolor" still matches.
+  /\b(?:acabar|terminar) con todo\b(?!\s+(?:(?:el|la|los|las|un|una|mi|mis|tu|tus|su|sus|del|este|esta|ese|esa)\s+)?(?:papeleo|tramites?|trabajo|tareas?|pendientes?|informes?|proyectos?|reembolsos?|pagos?|documentos?|formularios?|examen(?:es)?|estudios?)\b)/,
+  /\bno (?:quiero|deseo) (?:seguir )?(?:vivir|viviendo|estar viv[oa])\b/,
+  /\bno vale la pena (?:seguir )?(?:vivir|viviendo)\b/,
+  /\bno tiene sentido (?:seguir )?(?:vivir|viviendo)\b/,
+  /\bmi vida no tiene sentido\b/,
+  /\b(?:quiero|quisiera|deseo|prefiero|ganas de) morir(?:me)?\b/,
+  /\bojala me (?:muriera|muera)\b/,
+  /\bmejor muert[oa]\b/,
+  /\bhacerme dano\b/,
+  /\bme (?:quiero|voy a) hacer dano\b/,
+  /\blastimarme\b/,
+  /\bme (?:quiero|voy a) lastimar\b/,
+  /autolesion/,
+  /\b(?:cortarme|me (?:voy a |quiero )?cort(?:ar|o|e)) (?:las venas|los brazos|las munecas)\b/,
+  /\bahorcarme\b/,
+  /\b(?:tirarme|lanzarme|me (?:voy a |quiero )(?:tirar|lanzar)) (?:al metro|a las vias|de un|del|desde|por la ventana|por el balcon)\b/,
+  /\btomar(?:me)? todas las pastillas\b/,
+  /\bsobredosis\b/,
+];
+
 /**
- * Check if a message contains an explicit high-risk suicide or self-harm signal.
+ * Check if a message contains a suicide or self-harm signal.
  */
 export function isCrisisSignal(message: string): boolean {
   const normalized = message
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-  const crisisKeywords = [
-    'suicidio',
-    'suicidarme',
-    'matarme',
-    'no quiero vivir',
-    'quitarme la vida',
-    'hacerme dano',
-    'lastimarme',
-    'quiero lastimarme',
-    'me quiero lastimar',
-    'autolesion',
-    'autolesionarme',
-    'no vale la pena vivir',
-    'quiero morir'
-  ];
-  return crisisKeywords.some((keyword) => normalized.includes(keyword));
+  return CRISIS_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 /**
@@ -72,11 +94,25 @@ export function isClinicalQuestion(message: string): boolean {
     'medicación', 'medicacion', 'pastilla', 'pastillas', 'receta',
     'psiquiatra', 'diagnostico', 'diagnóstico', 'emergencia',
     'suicid', 'autolesion', 'autolesión', 'hacerme daño', 'morir',
-    'ataque de panico', 'ataque de pánico', 'crisis de angustia',
+    'panico', 'pánico', 'crisis de angustia',
     'angustia', 'lloro', 'no puedo mas', 'no puedo más', 'desesperad'
   ];
   const lowerMsg = message.toLowerCase();
   return clinicalKeywords.some(kw => lowerMsg.includes(kw));
+}
+
+export const CRISIS_TEXT_PLACEHOLDER = '[mensaje de crisis omitido]';
+export const CLINICAL_TEXT_PLACEHOLDER = '[mensaje clínico omitido]';
+
+/**
+ * Replace a patient message that reveals health information with a fixed marker, so it
+ * is neither stored nor sent to Claude. Detection is the same keyword heuristic the
+ * router uses: it lowers exposure, but a message it misses still goes through as is.
+ */
+export function redactSensitiveText(text: string): string {
+  if (isCrisisSignal(text)) return CRISIS_TEXT_PLACEHOLDER;
+  if (isClinicalQuestion(text)) return CLINICAL_TEXT_PLACEHOLDER;
+  return text;
 }
 
 /**

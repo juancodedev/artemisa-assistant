@@ -75,5 +75,5 @@ Las preguntas conocidas —precio, horarios, dirección, modalidad y sistemas de
 - Solo hay un perfil y el fallback de fila única pertenece exclusivamente a la Fase 1.
 - El acceso usa `service_role`, que bypassa RLS y debe permanecer server-side.
 - No hay dashboard, Google Auth ni ownership por usuario.
-- No hay RAG, análisis clínico, canal de escalamiento, consentimiento ni retención/borrado de historial.
+- No hay RAG, análisis clínico, canal de escalamiento ni exportación de datos. El consentimiento, el retiro, el borrado y la retención se describen en `docs/09-privacidad-y-consentimiento.md`.
 - El inbound soporta únicamente texto.

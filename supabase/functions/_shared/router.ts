@@ -3,10 +3,10 @@
 
 import { MensajeHistoria, Psicologo, RespuestaBot } from './types.ts';
 import { sanitizeInput, isClinicalQuestion, isCrisisSignal, isSchedulingRequest } from './validation.ts';
-import { generateResponse, quickAdminAnswer } from './claude.ts';
+import { CLINICAL_REFERRAL_RESPONSE, generateResponse, quickAdminAnswer } from './claude.ts';
 
 export const CRISIS_RESPONSE =
-  'Tu bienestar importa. Si estás pasando por una crisis, llamá gratis y confidencialmente a la Línea de Prevención del Suicidio al *4141, disponible las 24 horas. También podés llamar a Salud Responde al 600 360 7777 y seleccionar la opción 2. Esta conversación no reemplaza la atención profesional.';
+  'Tu bienestar importa. Si estás pasando por una crisis, llama gratis y confidencialmente a la Línea de Prevención del Suicidio al *4141, disponible las 24 horas. También puedes llamar a Salud Responde al 600 360 7777 y seleccionar la opción 2. Esta conversación no reemplaza la atención profesional.';
 
 /**
  * Greeting served for an empty message, and the introduction a sender receives the
@@ -16,7 +16,7 @@ export const CRISIS_RESPONSE =
 export function greetingResponse(psicologo: Psicologo): RespuestaBot {
   return {
     tipo: 'administrativa',
-    contenido: `¡Hola! Soy la Secretaria Virtual de ${psicologo.nombre}. ¿En qué puedo ayudarte hoy? Podés consultarme por precios, horarios, ubicación o cómo agendar una cita.`,
+    contenido: `¡Hola! Soy la Secretaria Virtual de ${psicologo.nombre}. ¿En qué puedo ayudarte hoy? Puedes consultarme por precios, horarios, ubicación o cómo agendar una cita.`,
   };
 }
 
@@ -48,7 +48,7 @@ export function routeDeterministicMessage(
   if (isSchedulingRequest(cleanMessage)) {
     return {
       tipo: 'programacion',
-      contenido: `Para agendar tu cita con ${psicologo.nombre}, podés elegir el día y horario que mejor te quede acá: ${psicologo.link_calcom}`,
+      contenido: `Para agendar tu cita con ${psicologo.nombre}, puedes elegir el día y horario que mejor te acomode aquí: ${psicologo.link_calcom}`,
       link_calcom: psicologo.link_calcom,
     };
   }
@@ -57,7 +57,7 @@ export function routeDeterministicMessage(
   if (isClinicalQuestion(cleanMessage)) {
     return {
       tipo: 'clinica',
-      contenido: `Esta consulta requiere atención directa con tu psicólogo/a. ${psicologo.nombre} te contactará a la brevedad.`,
+      contenido: CLINICAL_REFERRAL_RESPONSE,
     };
   }
 

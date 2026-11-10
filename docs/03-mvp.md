@@ -35,7 +35,7 @@ El MVP actual es un bot de WhatsApp de texto para un solo psicólogo demo. No in
 - Dashboard y editor del perfil.
 - Propiedad por usuario y políticas RLS de ownership.
 - Gestión de múltiples números de WhatsApp sin fallback de perfil único.
-- Flujo operativo para consentimiento, retención y eliminación de datos.
+- Publicar el texto legal aprobado y programar el borrado automático (ver `docs/09-privacidad-y-consentimiento.md`).
 
 ## Más adelante
 
@@ -46,4 +46,4 @@ El MVP actual es un bot de WhatsApp de texto para un solo psicólogo demo. No in
 
 ## Límites del MVP
 
-La solución actual no ofrece garantía clínica, certificación legal, consentimiento ni retención, canal de notificación profesional, análisis semántico de crisis, RAG ni soporte de audio, imágenes o documentos. El paciente siempre escribe primero y el MVP procesa únicamente texto.
+La solución actual no ofrece garantía clínica, certificación legal, exportación de datos, canal de notificación profesional, análisis semántico de crisis, RAG ni soporte de audio, imágenes o documentos. El paciente siempre escribe primero y el MVP procesa únicamente texto.

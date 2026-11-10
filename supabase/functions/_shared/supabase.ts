@@ -2,7 +2,7 @@
 // Server-side Supabase access for the deployed Edge Functions.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { Conversacion, MensajeHistoria, Psicologo } from './types.ts';
+import { Conversacion, MensajeHistoria, Psicologo, SenderConsentState } from './types.ts';
 
 const INBOUND_MESSAGES_TABLE = 'mensajes_procesados';
 const PROCESSING_LEASE_MS = 5 * 60 * 1000;
@@ -15,11 +15,18 @@ const PROFILE_INDEXED_LOOKUP_LIMIT = 1;
 const PROFILE_FALLBACK_LOOKUP_LIMIT = 2;
 const CONVERSATIONS_TABLE = 'conversaciones';
 const CONVERSATION_CONFLICT_TARGET = 'psicologo_id,numero_paciente';
-const SENDER_CONSENTS_TABLE = 'sender_consents';
+const CONSENT_PROMPTS_TABLE = 'consent_prompts';
+const CONSENT_EVENTS_TABLE = 'consent_events';
 const RATE_BUCKETS_TABLE = 'sender_rate_buckets';
-// Both conflict targets below must match a real constraint, not a bare index, so
-// PostgREST can build the ON CONFLICT clause. Migration 006 guarantees both.
-const SENDER_CONSENT_CONFLICT_TARGET = 'psicologo_id,numero_remitente';
+// The conflict target below must match a real constraint, not a bare index, so
+// PostgREST can build the ON CONFLICT clause. Migration 007 declares it as the
+// primary key of consent_prompts.
+const CONSENT_PROMPT_CONFLICT_TARGET = 'psicologo_id,numero_remitente,policy_version';
+// Consent state function created by migration 007.
+const CONSENT_STATE_FUNCTION = 'get_sender_consent_state';
+// Sender rights functions created by migration 008.
+const REVOKE_CONSENT_FUNCTION = 'revoke_sender_consent';
+const ERASE_DATA_FUNCTION = 'erase_sender_data';
 // Name of the atomic increment function created by migration 006.
 const RATE_LIMIT_SLOT_FUNCTION = 'consume_sender_rate_limit_slot';
 
@@ -411,75 +418,127 @@ export async function appendMessagesToConversacion(
 }
 
 /**
- * Whether a sender has explicitly opted in for this psychologist.
+ * The consent state of one sender for one psychologist, read in a single round trip
+ * through get_sender_consent_state (migration 007).
  *
- * Consent is scoped per (psicologo_id, numero_remitente), so a sender who opted in
- * with one professional is still unconsented for another. The lookup is an equality
- * match on the unique constraint declared by migration 006, so it is an index probe
- * rather than a scan.
+ * - policy:      the published policy in force, or null when none is published.
+ * - consented:   the sender's latest consent event grants THAT policy version, so a
+ *                newer policy asks again.
+ * - promptShown: the consent text of that version was already sent to this sender.
  *
- * Never throws. A query failure reports "not consented" instead of throwing, because
- * the caller's response to that answer is the safe path: an unconsented sender gets a
- * deterministic answer and no Claude call, whereas treating a database error as
- * consent would put an unconsented stranger on the paid path.
+ * Never throws. A failure reports no consent with lookupFailed set, which keeps the
+ * sender on the deterministic path: treating an error as consent would store history
+ * and call Claude for someone who never agreed to it.
  */
-export async function hasSenderConsent(
+export async function getSenderConsentState(
   psicologoId: string,
   senderNumber: string,
   client: SupabaseClient = getSupabaseClient()
-): Promise<boolean> {
+): Promise<SenderConsentState> {
+  const failedState: SenderConsentState = {
+    policy: null,
+    consented: false,
+    promptShown: false,
+    lookupFailed: true,
+  };
   try {
-    const { data, error } = await client
-      .from(SENDER_CONSENTS_TABLE)
-      .select('numero_remitente')
-      .eq('psicologo_id', psicologoId)
-      .eq('numero_remitente', senderNumber)
-      .maybeSingle();
+    const { data, error } = await client.rpc(CONSENT_STATE_FUNCTION, {
+      p_psicologo_id: psicologoId,
+      p_numero_remitente: senderNumber,
+    });
 
     if (error) {
-      console.error('Error loading sender consent');
+      console.error('Error loading sender consent state');
+      return failedState;
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    // No row is the documented answer for "no published policy".
+    if (!row) {
+      return { policy: null, consented: false, promptShown: false, lookupFailed: false };
+    }
+    if (
+      typeof row.policy_version !== 'string' ||
+      typeof row.policy_texto !== 'string' ||
+      typeof row.politica_url !== 'string'
+    ) {
+      console.error('Malformed sender consent state');
+      return failedState;
+    }
+
+    return {
+      policy: { version: row.policy_version, texto: row.policy_texto, url: row.politica_url },
+      consented: row.consented === true,
+      promptShown: row.prompt_shown === true,
+      lookupFailed: false,
+    };
+  } catch {
+    console.error('Exception loading sender consent state');
+    return failedState;
+  }
+}
+
+/**
+ * Record that the consent text of a policy version was sent to a sender. Idempotent:
+ * the first showing is kept, so shown_at says when the sender first saw it.
+ * Never throws; false means the record could not be written.
+ */
+export async function recordConsentPromptShown(
+  psicologoId: string,
+  senderNumber: string,
+  policyVersion: string,
+  wamid: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean> {
+  try {
+    const { error } = await client
+      .from(CONSENT_PROMPTS_TABLE)
+      .upsert(
+        {
+          psicologo_id: psicologoId,
+          numero_remitente: senderNumber,
+          policy_version: policyVersion,
+          wamid,
+        },
+        { onConflict: CONSENT_PROMPT_CONFLICT_TARGET, ignoreDuplicates: true }
+      );
+
+    if (error) {
+      // The code alone (no message, no data) tells a missing table or grant apart from
+      // an outage. While this keeps failing, the sender cannot consent: ACEPTO needs it.
+      console.error('Error recording consent prompt', { code: error.code });
       return false;
     }
-    return !!data;
+    return true;
   } catch {
-    console.error('Exception loading sender consent');
+    console.error('Exception in recordConsentPromptShown');
     return false;
   }
 }
 
 /**
- * Record a sender's opt-in consent. Idempotent: re-sending an opt-in token resolves
- * to the same row.
- *
- * The payload deliberately carries only the conflict target. PostgREST builds the
- * `ON CONFLICT ... DO UPDATE SET` clause exclusively from the columns present in the
- * payload, so omitting `opted_in_at` means a repeat opt-in cannot restate when consent
- * was first given, and omitting `origen` and `created_at` means the conflict path
- * cannot clobber how consent was captured or when the row was created. The insert
- * path still receives the column defaults.
- *
- * Never throws; a failed write reports false so the caller can decide what to tell the
- * sender instead of claiming a consent that was not stored.
+ * Append a granted consent for a policy version to the consent log. The log is
+ * append-only, so a later revocation is another row, never an edit of this one.
+ * Never throws; false means the consent was NOT stored and must not be confirmed.
  */
 export async function recordSenderConsent(
   psicologoId: string,
   senderNumber: string,
+  policyVersion: string,
+  wamid: string,
   client: SupabaseClient = getSupabaseClient()
 ): Promise<boolean> {
   try {
-    const { data, error } = await client
-      .from(SENDER_CONSENTS_TABLE)
-      .upsert(
-        {
-          psicologo_id: psicologoId,
-          numero_remitente: senderNumber,
-        },
-        { onConflict: SENDER_CONSENT_CONFLICT_TARGET }
-      )
-      .select('numero_remitente')
-      .maybeSingle();
+    const { error } = await client.from(CONSENT_EVENTS_TABLE).insert({
+      psicologo_id: psicologoId,
+      numero_remitente: senderNumber,
+      evento: 'granted',
+      policy_version: policyVersion,
+      wamid,
+      origen: 'whatsapp_acepto',
+    });
 
-    if (error || !data) {
+    if (error) {
       console.error('Error recording sender consent');
       return false;
     }
@@ -534,6 +593,66 @@ export async function consumeRateLimitSlot(
     return data;
   } catch {
     console.error('Exception in consumeRateLimitSlot');
+    return null;
+  }
+}
+
+/**
+ * BAJA: withdraw the sender's consent through revoke_sender_consent (migration 008),
+ * which appends a revoked event to the consent log.
+ *
+ * Returns true when a consent was withdrawn, false when there was none, and null when
+ * the request could not be processed. Never throws.
+ */
+export async function revokeSenderConsent(
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean | null> {
+  return await callRightsFunction(REVOKE_CONSENT_FUNCTION, psicologoId, senderNumber, wamid, client);
+}
+
+/**
+ * ELIMINAR: withdraw consent and delete the sender's conversation, prompts and rate
+ * counters through erase_sender_data (migration 008). The consent log is kept, and so
+ * are rate counters from the last two hours, so ELIMINAR cannot reset the rate limit;
+ * the retention purge removes them within a day.
+ *
+ * Returns true when a consent was also withdrawn, false when there was none, and null
+ * when nothing could be erased. Never throws.
+ */
+export async function eraseSenderData(
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient = getSupabaseClient()
+): Promise<boolean | null> {
+  return await callRightsFunction(ERASE_DATA_FUNCTION, psicologoId, senderNumber, wamid, client);
+}
+
+async function callRightsFunction(
+  name: string,
+  psicologoId: string,
+  senderNumber: string,
+  wamid: string,
+  client: SupabaseClient
+): Promise<boolean | null> {
+  try {
+    const { data, error } = await client.rpc(name, {
+      p_psicologo_id: psicologoId,
+      p_numero_remitente: senderNumber,
+      p_wamid: wamid,
+    });
+    if (error || typeof data !== 'boolean') {
+      // The code alone tells a missing function (deployed before migration 008) apart
+      // from an outage.
+      console.error(`Error calling ${name}`, { code: error?.code ?? 'unexpected_result' });
+      return null;
+    }
+    return data;
+  } catch {
+    console.error(`Exception calling ${name}`);
     return null;
   }
 }

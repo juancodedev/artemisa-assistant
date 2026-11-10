@@ -17,20 +17,42 @@ import {
   getBoundedHistory,
   getOrCreateConversacion,
   getPsicologo,
-  hasSenderConsent,
+  eraseSenderData,
+  getSenderConsentState,
   markDeliveryUncertain,
+  recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
 } from '../_shared/supabase.ts';
 import { processIncomingMessage } from '../_shared/bot.ts';
 import { evaluateGate } from '../_shared/gate.ts';
-import { normalizePhoneNumber } from '../_shared/validation.ts';
+import { CRISIS_RESPONSE } from '../_shared/router.ts';
+import {
+  CLINICAL_TEXT_PLACEHOLDER,
+  CRISIS_TEXT_PLACEHOLDER,
+  isCrisisSignal,
+  normalizePhoneNumber,
+  redactSensitiveText,
+  sanitizeInput,
+} from '../_shared/validation.ts';
+import type { TipoConsulta } from '../_shared/types.ts';
 import { aggregateBatchOutcomes, type BatchMessageOutcome } from '../_shared/batch.ts';
 
 const UNAVAILABLE_RESPONSE =
-  'En este momento el servicio está temporalmente no disponible. Por favor contactá a tu profesional directamente.';
+  'En este momento el servicio no está disponible. Por favor, comunícate directamente con tu profesional.';
 const MEDIA_RESPONSE =
-  'Por el momento solo puedo procesar mensajes de texto. Para enviarme audios o documentos, por favor contactá directamente a tu psicólogo/a.';
-const CRISIS_USER_MESSAGE_PLACEHOLDER = '[mensaje de crisis omitido]';
+  'Por el momento solo puedo procesar mensajes de texto. Para enviar audios o documentos, comunícate directamente con tu psicólogo/a.';
+
+/**
+ * The patient text that may be stored. The routing decision redacts what it already
+ * classified, including a clinical refusal Claude produced, and the text check catches
+ * clinical wording inside a message routed elsewhere, such as a scheduling request.
+ */
+function storedPatientText(text: string, tipo: TipoConsulta): string {
+  if (tipo === 'crisis') return CRISIS_TEXT_PLACEHOLDER;
+  if (tipo === 'clinica') return CLINICAL_TEXT_PLACEHOLDER;
+  return redactSensitiveText(text);
+}
 
 export interface WebhookDependencies {
   claimIncomingMessage: typeof claimIncomingMessage;
@@ -43,12 +65,15 @@ export interface WebhookDependencies {
   completeIncomingMessage: typeof completeIncomingMessage;
   failIncomingMessage: typeof failIncomingMessage;
   markDeliveryUncertain: typeof markDeliveryUncertain;
-  // The gate and the three data-access helpers it composes are injected separately on
+  // The gate and the data-access helpers it composes are injected separately on
   // purpose: a test can override evaluateGate alone to pin a decision, or override only
-  // the three helpers to drive the real gate logic end to end through this handler.
+  // the data-access helpers to drive the real gate logic end to end through this handler.
   evaluateGate: typeof evaluateGate;
-  hasSenderConsent: typeof hasSenderConsent;
+  getSenderConsentState: typeof getSenderConsentState;
+  recordConsentPromptShown: typeof recordConsentPromptShown;
   recordSenderConsent: typeof recordSenderConsent;
+  revokeSenderConsent: typeof revokeSenderConsent;
+  eraseSenderData: typeof eraseSenderData;
   consumeRateLimitSlot: typeof consumeRateLimitSlot;
 }
 
@@ -64,8 +89,11 @@ const defaultDependencies: WebhookDependencies = {
   failIncomingMessage,
   markDeliveryUncertain,
   evaluateGate,
-  hasSenderConsent,
+  getSenderConsentState,
+  recordConsentPromptShown,
   recordSenderConsent,
+  revokeSenderConsent,
+  eraseSenderData,
   consumeRateLimitSlot,
 };
 
@@ -109,14 +137,91 @@ async function handleDeliveryResult(
   return 'retry';
 }
 
+/**
+ * Store a redacted crisis exchange, only for a sender who consented to history.
+ * Runs after delivery, so a failure here can never cost the sender the crisis line.
+ * Returns false only when a consented exchange could not be stored.
+ */
+async function persistCrisisExchange(
+  message: WebhookMessage,
+  dependencies: WebhookDependencies
+): Promise<boolean> {
+  try {
+    const psicologo = await dependencies.getPsicologo(message.phoneNumberId);
+    if (!psicologo) return true;
+
+    const senderKey = normalizePhoneNumber(message.from);
+    const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
+    if (!consentState.consented) return true;
+
+    const conversation = await dependencies.getOrCreateConversacion(psicologo.id, senderKey);
+    if (!conversation) return false;
+
+    const timestamp = new Date().toISOString();
+    return await dependencies.appendMessagesToConversacion(conversation.id, conversation.historial, [
+      { role: 'user', content: CRISIS_TEXT_PLACEHOLDER, timestamp },
+      { role: 'assistant', content: CRISIS_RESPONSE, timestamp },
+    ]);
+  } catch {
+    console.error('Crisis exchange persistence failed after WhatsApp delivery');
+    return false;
+  }
+}
+
+/**
+ * Send the crisis line before anything that depends on the database.
+ *
+ * This is a safety ordering, not a performance choice. The crisis branch runs ahead of
+ * the profile lookup, the rate limit, and consent, so none of them, and no outage in
+ * any of them, can stand between a person in crisis and the helpline.
+ */
+async function handleCrisisMessage(
+  message: WebhookMessage,
+  claim: 'claimed' | 'uncertain',
+  dependencies: WebhookDependencies
+): Promise<BatchMessageOutcome> {
+  const deliveryOutcome = await handleDeliveryResult(
+    await dependencies.sendMessage(message.from, CRISIS_RESPONSE),
+    message.messageId,
+    dependencies
+  );
+  if (deliveryOutcome) return deliveryOutcome;
+
+  // Without a claim there is no idempotency row to complete, and asking Meta to
+  // redeliver would only repeat a helpline the sender already received.
+  if (claim === 'uncertain') return 'completed';
+
+  const persisted = await persistCrisisExchange(message, dependencies);
+  return markMessageCompleted(
+    message.messageId,
+    dependencies,
+    persisted ? null : 'persistence_failed'
+  );
+}
+
+async function claimForMessage(
+  message: WebhookMessage,
+  isCrisis: boolean,
+  dependencies: WebhookDependencies
+): ReturnType<typeof claimIncomingMessage> {
+  try {
+    return await dependencies.claimIncomingMessage(message.messageId);
+  } catch (error) {
+    if (isCrisis) return 'uncertain';
+    throw error;
+  }
+}
+
 async function processMessage(
   message: WebhookMessage,
   dependencies: WebhookDependencies
 ): Promise<BatchMessageOutcome> {
   try {
-    const claim = await dependencies.claimIncomingMessage(message.messageId);
+    const isCrisis = !!message.text && isCrisisSignal(sanitizeInput(message.text));
+    const claim = await claimForMessage(message, isCrisis, dependencies);
     if (claim === 'duplicate') return 'duplicate';
     if (claim === 'busy') return 'busy';
+    if (isCrisis) return await handleCrisisMessage(message, claim, dependencies);
     if (claim === 'uncertain') return 'retry';
 
     if (!message.text) {
@@ -142,9 +247,13 @@ async function processMessage(
       message.text,
       message.from,
       psicologo,
+      message.messageId,
       {
-        hasSenderConsent: dependencies.hasSenderConsent,
+        getSenderConsentState: dependencies.getSenderConsentState,
+        recordConsentPromptShown: dependencies.recordConsentPromptShown,
         recordSenderConsent: dependencies.recordSenderConsent,
+        revokeSenderConsent: dependencies.revokeSenderConsent,
+        eraseSenderData: dependencies.eraseSenderData,
         consumeRateLimitSlot: dependencies.consumeRateLimitSlot,
       }
     );
@@ -164,6 +273,8 @@ async function processMessage(
     // second outbound message for no new information, and each attempt would re-enter
     // this gate and burn another slot.
     switch (gateDecision.outcome) {
+      // BAJA or ELIMINAR handled, or honestly failed. No Claude, no persistence.
+      case 'rights':
       // Over the ceiling: send the over-limit text. No Claude, no persistence.
       case 'rate_limited':
       // Consent recorded: send the confirmation and greeting. No Claude, no persistence.
@@ -181,8 +292,8 @@ async function processMessage(
         );
         return gatedDeliveryOutcome || markMessageCompleted(message.messageId, dependencies);
       }
-      // A crisis signal, or an existing consent. From here the pipeline is exactly what
-      // it was before the gate existed.
+      // An existing consent. From here the pipeline is exactly what it was before the
+      // gate existed.
       case 'allow':
         break;
     }
@@ -211,13 +322,24 @@ async function processMessage(
     );
     if (deliveryOutcome) return deliveryOutcome;
 
+    // Consent is read again right before storing: a BAJA or ELIMINAR that landed while
+    // this message was being answered must not be followed by a stored exchange. A
+    // failed re-read keeps the consent the gate already saw.
+    const consentNow = await dependencies.getSenderConsentState(
+      psicologo.id,
+      normalizePhoneNumber(message.from)
+    );
+    if (!consentNow.consented && !consentNow.lookupFailed) {
+      return markMessageCompleted(message.messageId, dependencies);
+    }
+
     const persisted = await dependencies.appendMessagesToConversacion(
       conversation.id,
       conversation.historial,
       [
         {
           role: 'user',
-          content: botResult.tipo === 'crisis' ? CRISIS_USER_MESSAGE_PLACEHOLDER : message.text,
+          content: storedPatientText(message.text, botResult.tipo),
           timestamp: new Date().toISOString(),
         },
         {

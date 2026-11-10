@@ -40,3 +40,19 @@ export interface RespuestaBot {
   contenido: string;
   link_calcom?: string;
 }
+
+export interface ConsentPolicy {
+  version: string;
+  /** Exact consent text; {profesional} is replaced when rendered. */
+  texto: string;
+  url: string;
+}
+
+export interface SenderConsentState {
+  /** The published policy in force, or null when none is published. */
+  policy: ConsentPolicy | null;
+  consented: boolean;
+  promptShown: boolean;
+  /** The state could not be read. Distinct from "no policy" so the reply can say so. */
+  lookupFailed: boolean;
+}
