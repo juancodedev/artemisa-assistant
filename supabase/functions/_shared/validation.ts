@@ -40,7 +40,7 @@ export function normalizePhoneNumber(number: string): string {
 // patient's request, a false negative leaves a person in crisis without the helpline.
 // So the two phrases that are also everyday idioms match by default, and only their
 // known idiomatic continuations are excluded: "me mato estudiando", "terminar con todo
-// el papeleo". "Esta noche me mato" and "terminar con todo esto" still match, and so
+// el papeleo" (a chore, not a determiner, is what makes it everyday speech). "Esta noche me mato" and "terminar con todo esto" still match, and so
 // do continuations with a preposition, as in "me mato con las pastillas".
 const CRISIS_PATTERNS: readonly RegExp[] = [
   /suicid/,
@@ -50,7 +50,8 @@ const CRISIS_PATTERNS: readonly RegExp[] = [
   /\bquitarme la vida\b/,
   /\bme (?:quiero|voy a|pienso|quisiera) quitar la vida\b/,
   /\b(?:acabar|terminar) con mi vida\b/,
-  /\b(?:acabar|terminar) con todo\b(?!\s+(?:el|la|los|las|lo|un|una|mi|mis|tu|tus|su|sus|del)\b)/,
+  // Only administrative chores are excluded, so "con todo mi dolor" still matches.
+  /\b(?:acabar|terminar) con todo\b(?!\s+(?:(?:el|la|los|las|un|una|mi|mis|tu|tus|su|sus|del|este|esta|ese|esa)\s+)?(?:papeleo|tramites?|trabajo|tareas?|pendientes?|informes?|proyectos?|reembolsos?|pagos?|documentos?|formularios?|examen(?:es)?|estudios?)\b)/,
   /\bno (?:quiero|deseo) (?:seguir )?(?:vivir|viviendo|estar viv[oa])\b/,
   /\bno vale la pena (?:seguir )?(?:vivir|viviendo)\b/,
   /\bno tiene sentido (?:seguir )?(?:vivir|viviendo)\b/,
