@@ -87,14 +87,12 @@ export function isCrisisSignal(message: string): boolean {
 // each one is written once, without accents. Detection is a heuristic: it lowers what
 // reaches Claude and storage, and a message it misses still goes through as written.
 //
-// "panico" alone is not listed: "me da pánico hablar por teléfono" is an administrative
-// question. Only the phrases that describe panic as something the sender has are.
+// "panico" is handled apart, below: "me da pánico hablar por teléfono" is an
+// administrative question, while "tengo mucho pánico" discloses a symptom.
 const CLINICAL_KEYWORDS: readonly string[] = [
   // Symptoms and states.
   'me duele', 'me siento mal', 'sintoma', 'ansiedad', 'depresion', 'deprimid',
   'angustia', 'lloro', 'no puedo mas', 'desesperad', 'no puedo dormir', 'insomnio',
-  'ataque de panico', 'ataques de panico', 'crisis de panico', 'trastorno de panico',
-  'siento panico', 'tengo panico',
   // Treatment.
   'medicamento', 'medicacion', 'pastilla', 'receta', 'psiquiatra', 'diagnostico',
   'antidepresiv', 'ansiolitic',
@@ -114,7 +112,9 @@ export function isClinicalQuestion(message: string): boolean {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-  return CLINICAL_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  if (CLINICAL_KEYWORDS.some((keyword) => normalized.includes(keyword))) return true;
+  // Any mention of panic, except the everyday "(me) da pánico" said of a task.
+  return /panico/.test(normalized) && !/\bdan? (?:(?:un poco de|algo de|mucho) )?panico\b/.test(normalized);
 }
 
 export const CRISIS_TEXT_PLACEHOLDER = '[mensaje de crisis omitido]';

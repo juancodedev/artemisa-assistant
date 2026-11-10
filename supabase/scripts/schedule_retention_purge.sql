@@ -1,8 +1,8 @@
 -- Schedules the daily retention purge from migration 008. NOT a migration.
 --
 -- The retention is the default of purge_expired_personal_data (migration 008), 90 days,
--- which is what the consent text promises. The job calls it without an argument, so
--- the retention is set in one place.
+-- which must match what the consent text promises. The job calls it without an
+-- argument, so it follows the default; the preview below repeats the number by hand.
 --
 -- Run it by hand, once, after confirming that deleting conversations without
 -- activity for that long is intended: the first run deletes every conversation that is

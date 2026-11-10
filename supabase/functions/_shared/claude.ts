@@ -101,7 +101,7 @@ function removeSchedulingLinks(text: string, profileLink: string): string {
 }
 
 function isClinicalRefusal(text: string): boolean {
-  return text.toLowerCase().includes(CLINICAL_REFERRAL_MARKER);
+  return text.toLowerCase().includes(CLINICAL_REFERRAL_MARKER.toLowerCase());
 }
 
 function toClaudeMessages(

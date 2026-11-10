@@ -1095,6 +1095,9 @@ Deno.test('detects clinical messages without flagging administrative ones', () =
     'siento pánico todos los días',
     'tengo panico cuando salgo',
     'me diagnosticaron trastorno de pánico',
+    'tengo mucho pánico',
+    'sufro de pánico',
+    'me entra el pánico en la micro',
     // Keywords that already matched keep matching, with or without accents.
     'Tengo ANSIEDAD',
     'necesito una receta',
@@ -1109,6 +1112,7 @@ Deno.test('detects clinical messages without flagging administrative ones', () =
 
   const administrative = [
     'me da pánico hablar por teléfono, ¿puedo agendar por aquí?',
+    'Me da un poco de pánico la primera sesión, ¿cuánto dura?',
     '¿Cuánto cuesta la sesión?',
     '¿Atienden los sábados?',
   ];

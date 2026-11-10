@@ -268,6 +268,13 @@ begin
   if (select count(*) from public.consent_events) <> events_before then
     raise exception 'purge touched the consent log';
   end if;
+  -- The scheduled job relies on the default retention, which the consent text states.
+  if pg_get_function_arguments('public.purge_expired_personal_data(interval)'::regprocedure)
+    <> 'p_retention interval DEFAULT ''90 days''::interval'
+  then
+    raise exception 'the default retention is not 90 days: %',
+      pg_get_function_arguments('public.purge_expired_personal_data(interval)'::regprocedure);
+  end if;
   begin
     perform public.purge_expired_personal_data(interval '1 hour');
     raise exception 'purge accepted a retention shorter than a day';
