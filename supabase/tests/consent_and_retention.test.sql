@@ -403,8 +403,19 @@ begin
     raise exception 'policy published without BAJA and ELIMINAR';
   exception when check_violation then null;
   end;
-  -- A draft is not checked.
+  -- A draft is not checked, and publishing it the documented way (docs/09) is.
   insert into public.consent_policies (version, texto) values ('borrador-libre', 'Sin comandos todavía.');
+  begin
+    update public.consent_policies
+    set politica_url = 'https://example.test/libre', vigente_desde = now() - interval '1 hour'
+    where version = 'borrador-libre';
+    raise exception 'draft published without BAJA and ELIMINAR';
+  exception when check_violation then null;
+  end;
+  update public.consent_policies
+  set texto = 'Responde ACEPTO. Escribe BAJA o ELIMINAR.',
+      politica_url = 'https://example.test/libre', vigente_desde = now() - interval '1 hour'
+  where version = 'borrador-libre';
 end $$;
 
 rollback;

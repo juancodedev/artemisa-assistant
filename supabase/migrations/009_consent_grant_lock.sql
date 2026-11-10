@@ -89,6 +89,12 @@ begin
     raise exception 'the current rate-limit window is required' using errcode = '22023';
   end if;
 
+  -- Taken here, before any delete, so a concurrent ACEPTO waits for the whole erasure.
+  -- revoke_sender_consent takes the same lock again; advisory locks are reentrant.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(p_psicologo_id::text || '|' || p_numero_remitente, 0)
+  );
+
   revoked := public.revoke_sender_consent(
     p_psicologo_id, p_numero_remitente, p_wamid, 'whatsapp_eliminar'
   );
@@ -126,7 +132,10 @@ grant execute on function public.erase_sender_data(uuid, text, text, timestamptz
 revoke all on sequence public.consent_events_id_seq from public, anon, authenticated;
 
 -- 5. A published policy names the words the bot acts on. Drafts are not checked, so a
---    text under review can still be edited freely.
+--    text under review can still be edited freely. Adding the constraint checks the
+--    existing rows: a policy already published without the three words makes this
+--    migration fail as a whole, and must be replaced by a new version first. Production
+--    had only the unpublished draft when this was written.
 alter table public.consent_policies
   add constraint consent_policies_published_names_commands
   check (
