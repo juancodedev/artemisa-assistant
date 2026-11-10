@@ -13,7 +13,7 @@ import {
   recordSenderConsent,
 } from './supabase.ts';
 import { Psicologo } from './types.ts';
-import { isCrisisSignal, normalizePhoneNumber, sanitizeInput } from './validation.ts';
+import { normalizePhoneNumber, sanitizeInput } from './validation.ts';
 
 // ---------------------------------------------------------------------------
 // Tunable product defaults
@@ -97,10 +97,9 @@ export const DEGRADED_SERVICE_RESPONSE =
 
 /**
  * Why the gate allowed a message through.
- * - crisis:   a crisis signal, which is never gated (see evaluateGate).
  * - consented: the sender already opted in for this psychologist.
  */
-export type GateAllowReason = 'crisis' | 'consented';
+export type GateAllowReason = 'consented';
 
 export type GateDecision =
   /** Continue into the full existing pipeline, unchanged. Carries no reply. */
@@ -180,20 +179,10 @@ function limitedResponse(cleanMessage: string, psicologo: Psicologo): string {
 /**
  * Decide what a sender is allowed to reach, in a fixed order.
  *
- * WHY CRISIS IS EVALUATED FIRST, BEFORE THE RATE LIMIT AND BEFORE CONSENT
- * 1. The crisis branch makes no Claude call. It is a string comparison against a
- *    keyword list plus a constant response, so gating it protects no budget at all.
- * 2. Gating it would create real, concrete harm. A person writing for the first time
- *    about killing themselves and receiving "respondé QUIERO" instead of the
- *    suicide-prevention line would be sent away from the only help offered.
- * 3. The cost of putting it first is therefore close to zero, while the cost of putting
- *    it anywhere later is a life-safety regression.
- * Because a person in crisis is exactly the person most likely to send several
- * messages in a row, this ordering also means the rate limit can never be what stands
- * between that person and the crisis response. DO NOT "optimize" this check into a
- * later branch: it is a safety ordering, not a performance choice.
+ * Crisis signals never reach this gate: the webhook answers them first, ahead of the
+ * rate limit, consent, and every other database read (see handleCrisisMessage).
  *
- * @param rawText    The inbound message text, sanitized here before any decision.
+ * @param rawText   The inbound message text, sanitized here before any decision.
  * @param senderNumber The sender's WhatsApp number; normalized once and used as the
  *                   consent and rate-limit key for every branch below, so the gate can
  *                   never consult two different identities for one sender.
@@ -208,16 +197,11 @@ export async function evaluateGate(
 ): Promise<GateDecision> {
   const cleanMessage = sanitizeInput(rawText);
 
-  // 1. Crisis. Never gated. See the ordering note above.
-  if (isCrisisSignal(cleanMessage)) {
-    return { outcome: 'allow', reason: 'crisis' };
-  }
-
   // One identity for consent and for the rate limit, both scoped to this psychologist.
   const senderKey = normalizePhoneNumber(senderNumber);
   const consented = await dependencies.hasSenderConsent(psicologo.id, senderKey);
 
-  // 2. Rate limit. The ceiling depends on consent state, so consent is resolved first
+  // 1. Rate limit. The ceiling depends on consent state, so consent is resolved first
   //    even though deciding to charge a slot is not what makes a sender "consented".
   const ceiling = consented ? CONSENTED_HOURLY_CEILING : NON_CONSENTED_HOURLY_CEILING;
   const messageCount = await dependencies.consumeRateLimitSlot(
@@ -248,12 +232,12 @@ export async function evaluateGate(
     return { outcome: 'rate_limited', response: RATE_LIMIT_RESPONSE };
   }
 
-  // 3. Consented: the full existing pipeline, unchanged.
+  // 2. Consented: the full existing pipeline, unchanged.
   if (consented) {
     return { outcome: 'allow', reason: 'consented' };
   }
 
-  // 4. Explicit opt-in. Consent is recorded, then confirmed with the greeting. No
+  // 3. Explicit opt-in. Consent is recorded, then confirmed with the greeting. No
   //    Claude call and no conversation row: the greeting is fully self-contained, so
   //    nothing is lost by not persisting the token that granted consent.
   //
@@ -272,7 +256,7 @@ export async function evaluateGate(
     };
   }
 
-  // 5. Unconsented and not opting in: the deterministic answer plus the consent
+  // 4. Unconsented and not opting in: the deterministic answer plus the consent
   //    request. No Claude, no history, no conversation row.
   return { outcome: 'limited', response: limitedResponse(cleanMessage, psicologo) };
 }

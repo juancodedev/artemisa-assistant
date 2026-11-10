@@ -35,30 +35,43 @@ export function normalizePhoneNumber(number: string): string {
   return clean.startsWith('+') ? clean : `+${clean}`;
 }
 
+// Matched against lowercased text with accents removed, so patterns are written
+// without accents. Over-matching is deliberate: a false positive costs one message
+// with a helpline, while a false negative leaves a person in crisis without one.
+const CRISIS_PATTERNS: readonly RegExp[] = [
+  /suicid/,
+  /\bmatarme\b/,
+  /\bme (?:quiero|voy a|gustaria|quisiera|pienso) matar\b/,
+  /\bme mato\b/,
+  /\bquitarme la vida\b/,
+  /\b(?:acabar|terminar) con (?:mi vida|todo)\b/,
+  /\bno (?:quiero|deseo) (?:seguir )?(?:vivir|viviendo|estar viv[oa])\b/,
+  /\bno vale la pena (?:seguir )?(?:vivir|viviendo)\b/,
+  /\bno tiene sentido (?:seguir )?(?:vivir|viviendo)\b/,
+  /\bmi vida no tiene sentido\b/,
+  /\b(?:quiero|quisiera|deseo|prefiero|ganas de) morir(?:me)?\b/,
+  /\bojala me (?:muriera|muera)\b/,
+  /\bmejor muert[oa]\b/,
+  /\bhacerme dano\b/,
+  /\blastimarme\b/,
+  /\bme (?:quiero|voy a) lastimar\b/,
+  /autolesion/,
+  /\b(?:cortarme|me (?:voy a |quiero )?cort(?:ar|o)) (?:las venas|los brazos|las munecas)\b/,
+  /\bahorcarme\b/,
+  /\b(?:tirarme|lanzarme|me (?:voy a |quiero )(?:tirar|lanzar)) (?:al metro|a las vias|de un|del|desde|por la ventana|por el balcon)\b/,
+  /\btomar(?:me)? todas las pastillas\b/,
+  /\bsobredosis\b/,
+];
+
 /**
- * Check if a message contains an explicit high-risk suicide or self-harm signal.
+ * Check if a message contains a suicide or self-harm signal.
  */
 export function isCrisisSignal(message: string): boolean {
   const normalized = message
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-  const crisisKeywords = [
-    'suicidio',
-    'suicidarme',
-    'matarme',
-    'no quiero vivir',
-    'quitarme la vida',
-    'hacerme dano',
-    'lastimarme',
-    'quiero lastimarme',
-    'me quiero lastimar',
-    'autolesion',
-    'autolesionarme',
-    'no vale la pena vivir',
-    'quiero morir'
-  ];
-  return crisisKeywords.some((keyword) => normalized.includes(keyword));
+  return CRISIS_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 /**

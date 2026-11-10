@@ -23,7 +23,8 @@ import {
 } from '../_shared/supabase.ts';
 import { processIncomingMessage } from '../_shared/bot.ts';
 import { evaluateGate } from '../_shared/gate.ts';
-import { normalizePhoneNumber } from '../_shared/validation.ts';
+import { CRISIS_RESPONSE } from '../_shared/router.ts';
+import { isCrisisSignal, normalizePhoneNumber, sanitizeInput } from '../_shared/validation.ts';
 import { aggregateBatchOutcomes, type BatchMessageOutcome } from '../_shared/batch.ts';
 
 const UNAVAILABLE_RESPONSE =
@@ -109,14 +110,90 @@ async function handleDeliveryResult(
   return 'retry';
 }
 
+/**
+ * Store a redacted crisis exchange, only for a sender who consented to history.
+ * Runs after delivery, so a failure here can never cost the sender the crisis line.
+ * Returns false only when a consented exchange could not be stored.
+ */
+async function persistCrisisExchange(
+  message: WebhookMessage,
+  dependencies: WebhookDependencies
+): Promise<boolean> {
+  try {
+    const psicologo = await dependencies.getPsicologo(message.phoneNumberId);
+    if (!psicologo) return true;
+
+    const senderKey = normalizePhoneNumber(message.from);
+    if (!(await dependencies.hasSenderConsent(psicologo.id, senderKey))) return true;
+
+    const conversation = await dependencies.getOrCreateConversacion(psicologo.id, senderKey);
+    if (!conversation) return false;
+
+    const timestamp = new Date().toISOString();
+    return await dependencies.appendMessagesToConversacion(conversation.id, conversation.historial, [
+      { role: 'user', content: CRISIS_USER_MESSAGE_PLACEHOLDER, timestamp },
+      { role: 'assistant', content: CRISIS_RESPONSE, timestamp },
+    ]);
+  } catch {
+    console.error('Crisis exchange persistence failed after WhatsApp delivery');
+    return false;
+  }
+}
+
+/**
+ * Send the crisis line before anything that depends on the database.
+ *
+ * This is a safety ordering, not a performance choice. The crisis branch runs ahead of
+ * the profile lookup, the rate limit, and consent, so none of them, and no outage in
+ * any of them, can stand between a person in crisis and the helpline.
+ */
+async function handleCrisisMessage(
+  message: WebhookMessage,
+  claim: 'claimed' | 'uncertain',
+  dependencies: WebhookDependencies
+): Promise<BatchMessageOutcome> {
+  const deliveryOutcome = await handleDeliveryResult(
+    await dependencies.sendMessage(message.from, CRISIS_RESPONSE),
+    message.messageId,
+    dependencies
+  );
+  if (deliveryOutcome) return deliveryOutcome;
+
+  // Without a claim there is no idempotency row to complete, and asking Meta to
+  // redeliver would only repeat a helpline the sender already received.
+  if (claim === 'uncertain') return 'completed';
+
+  const persisted = await persistCrisisExchange(message, dependencies);
+  return markMessageCompleted(
+    message.messageId,
+    dependencies,
+    persisted ? null : 'persistence_failed'
+  );
+}
+
+async function claimForMessage(
+  message: WebhookMessage,
+  isCrisis: boolean,
+  dependencies: WebhookDependencies
+): ReturnType<typeof claimIncomingMessage> {
+  try {
+    return await dependencies.claimIncomingMessage(message.messageId);
+  } catch (error) {
+    if (isCrisis) return 'uncertain';
+    throw error;
+  }
+}
+
 async function processMessage(
   message: WebhookMessage,
   dependencies: WebhookDependencies
 ): Promise<BatchMessageOutcome> {
   try {
-    const claim = await dependencies.claimIncomingMessage(message.messageId);
+    const isCrisis = !!message.text && isCrisisSignal(sanitizeInput(message.text));
+    const claim = await claimForMessage(message, isCrisis, dependencies);
     if (claim === 'duplicate') return 'duplicate';
     if (claim === 'busy') return 'busy';
+    if (isCrisis) return await handleCrisisMessage(message, claim, dependencies);
     if (claim === 'uncertain') return 'retry';
 
     if (!message.text) {
@@ -181,8 +258,8 @@ async function processMessage(
         );
         return gatedDeliveryOutcome || markMessageCompleted(message.messageId, dependencies);
       }
-      // A crisis signal, or an existing consent. From here the pipeline is exactly what
-      // it was before the gate existed.
+      // An existing consent. From here the pipeline is exactly what it was before the
+      // gate existed.
       case 'allow':
         break;
     }

@@ -953,6 +953,101 @@ Deno.test('prioritizes crisis signals over scheduling and never calls Claude', a
   assert.equal(claudeCalls, 0);
 });
 
+Deno.test('detects real first-person crisis phrasing without flagging everyday speech', () => {
+  const crisisPhrases = [
+    'me quiero matar',
+    'me voy a matar',
+    'Me quiero suicidar',
+    'me voy a suicidar',
+    'estoy pensando en suicidarme',
+    'ya no quiero seguir viviendo',
+    'no quiero estar viva',
+    'me quiero morir',
+    'tengo ganas de morirme',
+    'ojalá me muriera',
+    'estaría mejor muerto',
+    'quiero acabar con mi vida',
+    'voy a terminar con todo',
+    'mi vida no tiene sentido',
+    'me voy a cortar las venas',
+    'quiero ahorcarme',
+    'me voy a tirar al metro',
+    'me voy a tomar todas las pastillas',
+  ];
+  for (const phrase of crisisPhrases) {
+    assert.equal(isCrisisSignal(phrase), true, `expected a crisis signal for ${JSON.stringify(phrase)}`);
+  }
+
+  const everydaySpeech = [
+    '¿Cuál es el precio de la sesión?',
+    'quiero cortarme el pelo antes de la sesión',
+    'voy a matar el tiempo mientras espero',
+    'me mata el tráfico para llegar',
+    'quiero agendar una cita',
+  ];
+  for (const phrase of everydaySpeech) {
+    assert.equal(isCrisisSignal(phrase), false, `expected no crisis signal for ${JSON.stringify(phrase)}`);
+  }
+});
+
+Deno.test('sends the crisis line and stores nothing for a non-consented sender', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const probe = createGateProbe();
+  const response = await handleWebhook(
+    await buildWebhookRequest('me quiero matar', 'wamid-crisis-stranger'),
+    createWebhookDependencies(probe.overrides(false))
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(probe.sentTexts, [CRISIS_RESPONSE]);
+  assert.equal(probe.conversationLookups, 0);
+  assert.equal(probe.persistedConversations, 0);
+  assert.deepEqual(probe.completedWamids, ['wamid-crisis-stranger']);
+});
+
+Deno.test('sends the crisis line through every database failure', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const outages: Array<[string, Partial<WebhookDependencies>]> = [
+    ['claim is uncertain', {
+      claimIncomingMessage: (async () => 'uncertain') as unknown as WebhookDependencies['claimIncomingMessage'],
+    }],
+    ['claim throws', {
+      claimIncomingMessage: (async () => {
+        throw new Error('database unavailable');
+      }) as unknown as WebhookDependencies['claimIncomingMessage'],
+    }],
+    ['profile is unavailable', {
+      getPsicologo: (async () => null) as unknown as WebhookDependencies['getPsicologo'],
+    }],
+    ['conversation is unavailable', {
+      getOrCreateConversacion: (async () => null) as unknown as WebhookDependencies['getOrCreateConversacion'],
+    }],
+    ['profile lookup throws', {
+      getPsicologo: (async () => {
+        throw new Error('database unavailable');
+      }) as unknown as WebhookDependencies['getPsicologo'],
+    }],
+  ];
+
+  for (const [name, failure] of outages) {
+    const sentTexts: string[] = [];
+    const response = await handleWebhook(
+      await buildWebhookRequest('quiero suicidarme', `wamid-outage-${name}`),
+      createWebhookDependencies({
+        sendMessage: (async (_to: string, text: string) => {
+          sentTexts.push(text);
+          return { success: true, delivery: 'delivered', messageId: 'sent' };
+        }) as unknown as WebhookDependencies['sendMessage'],
+        ...failure,
+      })
+    );
+
+    assert.deepEqual(sentTexts, [CRISIS_RESPONSE], name);
+    // The patient already has the line, so Meta must not redeliver and repeat it.
+    assert.equal(response.status, 200, name);
+  }
+});
+
 Deno.test('keeps the ordinary clinical response separate from crisis routing', async () => {
   const result = await routeMessage('Tengo mucha ansiedad y no puedo dormir', profile);
   assert.equal(result.tipo, 'clinica');
@@ -1176,11 +1271,10 @@ Deno.test('answers a crisis signal from a non-consented rate-limited sender with
 
   assert.equal(response.status, 200);
   assert.deepEqual(sentTexts, [CRISIS_RESPONSE]);
-  // Crisis precedes BOTH gates: neither the rate limit nor consent was even consulted,
-  // so no ceiling and no consent state could ever have stood in front of this answer.
+  // Crisis precedes the gate: the rate limit is never consulted, and consent is only
+  // read after delivery to decide whether the redacted exchange may be stored.
   assert.equal(slotConsumptions, 0);
-  assert.equal(consentChecks, 0);
-  // It took the full existing path, including the existing crisis redaction on persist.
+  assert.equal(consentChecks, 1);
   assert.equal(RATE_LIMIT_RESPONSE.includes(CRISIS_RESPONSE), false);
 });
 
@@ -1525,23 +1619,14 @@ Deno.test('decides the gate order independently of the webhook', async () => {
     consumeRateLimitSlot: (async () => 1) as unknown as WebhookDependencies['consumeRateLimitSlot'],
   };
 
-  // 1. Crisis, ahead of an unconsented sender and an over-limit counter.
-  assert.deepEqual(
-    await evaluateGate('quiero suicidarme', '+111', profile, {
-      ...dependencies,
-      consumeRateLimitSlot: (async () => 9_999) as unknown as WebhookDependencies['consumeRateLimitSlot'],
-    }),
-    { outcome: 'allow', reason: 'crisis' }
-  );
-
-  // 2. Rate limit, with a distinct ceiling per consent state.
+  // 1. Rate limit, with a distinct ceiling per consent state.
   const overLimit = await evaluateGate('Hola', '+111', profile, {
     ...dependencies,
     consumeRateLimitSlot: (async () => 11) as unknown as WebhookDependencies['consumeRateLimitSlot'],
   });
   assert.deepEqual(overLimit, { outcome: 'rate_limited', response: RATE_LIMIT_RESPONSE });
 
-  // 3. Consented, on the full path. 11 is over the unconsented ceiling but under the
+  // 2. Consented, on the full path. 11 is over the unconsented ceiling but under the
   // consented one, which is the only thing the two ceilings differ on.
   assert.deepEqual(
     await evaluateGate('Hola', '+111', profile, {
@@ -1552,7 +1637,7 @@ Deno.test('decides the gate order independently of the webhook', async () => {
     { outcome: 'allow', reason: 'consented' }
   );
 
-  // 4. Opt-in token, and 5. everything else.
+  // 3. Opt-in token, and 4. everything else.
   const optIn = await evaluateGate('quiero', '+111', profile, dependencies);
   assert.equal(optIn.outcome, 'optin_confirmed');
   const limited = await evaluateGate('Hola', '+111', profile, dependencies);
