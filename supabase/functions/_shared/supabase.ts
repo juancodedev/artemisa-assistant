@@ -504,7 +504,9 @@ export async function recordConsentPromptShown(
       );
 
     if (error) {
-      console.error('Error recording consent prompt');
+      // The code alone (no message, no data) tells a missing table or grant apart from
+      // an outage. While this keeps failing, the sender cannot consent: ACEPTO needs it.
+      console.error('Error recording consent prompt', { code: error.code });
       return false;
     }
     return true;
@@ -613,7 +615,9 @@ export async function revokeSenderConsent(
 
 /**
  * ELIMINAR: withdraw consent and delete the sender's conversation, prompts and rate
- * counters through erase_sender_data (migration 008). The consent log is kept.
+ * counters through erase_sender_data (migration 008). The consent log is kept, and so
+ * are rate counters from the last two hours, so ELIMINAR cannot reset the rate limit;
+ * the retention purge removes them within a day.
  *
  * Returns true when a consent was also withdrawn, false when there was none, and null
  * when nothing could be erased. Never throws.
@@ -641,7 +645,9 @@ async function callRightsFunction(
       p_wamid: wamid,
     });
     if (error || typeof data !== 'boolean') {
-      console.error(`Error calling ${name}`);
+      // The code alone tells a missing function (deployed before migration 008) apart
+      // from an outage.
+      console.error(`Error calling ${name}`, { code: error?.code ?? 'unexpected_result' });
       return null;
     }
     return data;

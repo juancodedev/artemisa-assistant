@@ -40,8 +40,9 @@ export function normalizePhoneNumber(number: string): string {
 // patient's request, a false negative leaves a person in crisis without the helpline.
 // So the two phrases that are also everyday idioms match by default, and only their
 // known idiomatic continuations are excluded: "me mato estudiando", "terminar con todo
-// el papeleo" (a chore, not a determiner, is what makes it everyday speech). "Esta noche me mato" and "terminar con todo esto" still match, and so
-// do continuations with a preposition, as in "me mato con las pastillas".
+// el papeleo" (a chore, not a determiner, is what makes it everyday speech).
+// "Esta noche me mato", "terminar con todo esto" and "acabar con todo mi dolor" still
+// match, and so do continuations with a preposition, as in "me mato con las pastillas".
 const CRISIS_PATTERNS: readonly RegExp[] = [
   /suicid/,
   /\bmatarme\b/,

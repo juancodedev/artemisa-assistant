@@ -39,7 +39,7 @@ where version = '2026-11-borrador';
 
 Para cambiar una política ya publicada, inserta una versión nueva; no edites la anterior. El `service_role` solo puede leer las políticas: publícalas desde el editor SQL.
 
-No publiques la política antes de desplegar la migración 008 y la Edge Function que atiende `BAJA` y `ELIMINAR`: el texto los promete.
+No publiques la política antes de tener las tres cosas que el texto promete: la migración 008 aplicada, la Edge Function que atiende `BAJA` y `ELIMINAR` desplegada, y el borrado a 90 días programado con `supabase/scripts/schedule_retention_purge.sql` (ver **Retención**).
 
 ## Derechos por WhatsApp
 
