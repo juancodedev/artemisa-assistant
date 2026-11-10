@@ -1,4 +1,4 @@
--- Database tests for migrations 007 and 008.
+-- Database tests for migrations 007 to 009.
 --
 -- Run against a disposable database that has every migration applied:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/consent_and_retention.test.sql
@@ -12,7 +12,7 @@ insert into public.psicologos (id, nombre, numero_whatsapp, modalidad, direccion
 values ('00000000-0000-0000-0000-0000000000a1', 'Test', '+56900000001', 'Online', 'Calle 1', '$1', 'Sesión', 'https://cal.com/test');
 
 insert into public.consent_policies (version, texto, politica_url, vigente_desde)
-values ('test-v1', 'Texto v1. Responde ACEPTO.', 'https://example.test/v1', now() - interval '2 days');
+values ('test-v1', 'Texto v1. Responde ACEPTO. Escribe BAJA o ELIMINAR.', 'https://example.test/v1', now() - interval '2 days');
 
 set local role service_role;
 
@@ -28,8 +28,12 @@ end $$;
 -- Prompt shown, then granted: consented to the active version.
 insert into public.consent_prompts (psicologo_id, numero_remitente, policy_version, wamid)
 values ('00000000-0000-0000-0000-0000000000a1', '+111', 'test-v1', 'wamid-prompt');
-insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
-values ('00000000-0000-0000-0000-0000000000a1', '+111', 'granted', 'test-v1', 'wamid-grant', 'whatsapp_acepto');
+do $$
+begin
+  if not public.record_sender_consent('00000000-0000-0000-0000-0000000000a1', '+111', 'test-v1', 'wamid-grant') then
+    raise exception 'ACEPTO after the consent text was not recorded';
+  end if;
+end $$;
 
 do $$
 declare state record;
@@ -96,7 +100,7 @@ end $$;
 
 -- A newer published policy asks again: the earlier grant no longer counts.
 insert into public.consent_policies (version, texto, politica_url, vigente_desde)
-values ('test-v2', 'Texto v2. Responde ACEPTO.', 'https://example.test/v2', now() - interval '1 day');
+values ('test-v2', 'Texto v2. Responde ACEPTO. Escribe BAJA o ELIMINAR.', 'https://example.test/v2', now() - interval '1 day');
 
 do $$
 declare state record;
@@ -108,7 +112,7 @@ end $$;
 
 -- A future policy is not active yet.
 insert into public.consent_policies (version, texto, politica_url, vigente_desde)
-values ('test-future', 'Futuro', 'https://example.test/f', now() + interval '1 day');
+values ('test-future', 'Futuro: ACEPTO, BAJA, ELIMINAR', 'https://example.test/f', now() + interval '1 day');
 
 do $$
 declare state record;
@@ -144,10 +148,10 @@ begin
 end $$;
 
 -- 008: BAJA appends a revocation only when there is a consent to withdraw.
-set local role service_role;
-
 insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
 values ('00000000-0000-0000-0000-0000000000a1', '+444', 'granted', 'test-v2', 'w-grant-444', 'whatsapp_acepto');
+
+set local role service_role;
 
 do $$
 declare state record;
@@ -201,7 +205,7 @@ set local role service_role;
 
 do $$
 begin
-  if not public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+555', 'w-eliminar-555') then
+  if not public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+555', 'w-eliminar-555', date_trunc('hour', now())) then
     raise exception 'ELIMINAR did not report the withdrawn consent';
   end if;
 end $$;
@@ -236,6 +240,7 @@ begin
 end $$;
 
 -- 008: the purge deletes only what is older than the retention, never the log.
+-- Counts are lower bounds, so the check also passes on a database with older data.
 insert into public.conversaciones (psicologo_id, numero_paciente, historial, ultima_actividad)
 values ('00000000-0000-0000-0000-0000000000a1', '+777', '[]'::jsonb, now() - interval '91 days'),
        ('00000000-0000-0000-0000-0000000000a1', '+888', '[]'::jsonb, now() - interval '89 days');
@@ -255,8 +260,8 @@ declare
   events_before bigint := (select count(*) from public.consent_events);
 begin
   select * into purged from public.purge_expired_personal_data(interval '90 days');
-  if purged.conversaciones <> 1 or purged.consent_prompts <> 1
-    or purged.mensajes_procesados <> 1 or purged.sender_rate_buckets <> 1
+  if purged.conversaciones < 1 or purged.consent_prompts < 1
+    or purged.mensajes_procesados < 1 or purged.sender_rate_buckets < 1
   then
     raise exception 'purge counts wrong: %', purged;
   end if;
@@ -275,8 +280,12 @@ reset role;
 -- Checked as the owner: on plain Postgres the service role holds no grant on these.
 do $$
 begin
-  if exists (select 1 from public.conversaciones where numero_paciente = '+777') then
-    raise exception 'expired conversation survived the purge';
+  if exists (select 1 from public.conversaciones where numero_paciente = '+777')
+    or exists (select 1 from public.consent_prompts where numero_remitente = '+777')
+    or exists (select 1 from public.mensajes_procesados where wamid = 'w-processed-old')
+    or exists (select 1 from public.sender_rate_buckets where numero_remitente = '+777')
+  then
+    raise exception 'expired data survived the purge';
   end if;
   if not exists (select 1 from public.conversaciones where numero_paciente = '+888') then
     raise exception 'purge deleted a conversation inside the retention';
@@ -295,13 +304,107 @@ begin
   then
     raise exception 'service role can write consent policies';
   end if;
-  if has_function_privilege('anon', 'public.erase_sender_data(uuid, text, text)', 'execute')
-    or has_function_privilege('authenticated', 'public.erase_sender_data(uuid, text, text)', 'execute')
+  if has_function_privilege('anon', 'public.erase_sender_data(uuid, text, text, timestamptz)', 'execute')
+    or has_function_privilege('authenticated', 'public.erase_sender_data(uuid, text, text, timestamptz)', 'execute')
     or has_function_privilege('anon', 'public.revoke_sender_consent(uuid, text, text, text)', 'execute')
     or has_function_privilege('anon', 'public.purge_expired_personal_data(interval)', 'execute')
   then
     raise exception 'a client role can call a rights or retention function';
   end if;
+end $$;
+
+-- 009: ACEPTO goes through record_sender_consent, under the per-sender lock.
+insert into public.consent_prompts (psicologo_id, numero_remitente, policy_version, wamid)
+values ('00000000-0000-0000-0000-0000000000a1', '+1010', 'test-v2', 'w-prompt-1010');
+
+set local role service_role;
+
+do $$
+declare state record;
+begin
+  -- No prompt shown for this sender: the grant is refused and nothing is appended.
+  if public.record_sender_consent('00000000-0000-0000-0000-0000000000a1', '+1111', 'test-v2', 'w-acepto-1111') then
+    raise exception 'ACEPTO was recorded without the consent text being shown';
+  end if;
+  if exists (select 1 from public.consent_events where numero_remitente = '+1111') then
+    raise exception 'a refused ACEPTO appended an event';
+  end if;
+
+  -- Prompt shown: the grant is appended with its version, message and origin.
+  if not public.record_sender_consent('00000000-0000-0000-0000-0000000000a1', '+1010', 'test-v2', 'w-acepto-1010') then
+    raise exception 'ACEPTO after the consent text was not recorded';
+  end if;
+  if (select string_agg(evento || ':' || policy_version || ':' || wamid || ':' || origen, ',')
+      from public.consent_events where numero_remitente = '+1010')
+    <> 'granted:test-v2:w-acepto-1010:whatsapp_acepto'
+  then
+    raise exception 'ACEPTO recorded the wrong event';
+  end if;
+  select * into state from public.get_sender_consent_state('00000000-0000-0000-0000-0000000000a1', '+1010');
+  if not state.consented then raise exception 'recorded ACEPTO does not count as consent'; end if;
+
+  -- ELIMINAR lands first: the prompt is gone, so a late ACEPTO is refused.
+  perform public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+1010', 'w-eliminar-1010', date_trunc('hour', now()));
+  if public.record_sender_consent('00000000-0000-0000-0000-0000000000a1', '+1010', 'test-v2', 'w-acepto-late') then
+    raise exception 'ACEPTO was recorded after ELIMINAR erased the prompt';
+  end if;
+  select * into state from public.get_sender_consent_state('00000000-0000-0000-0000-0000000000a1', '+1010');
+  if state.consented then raise exception 'sender consented after ELIMINAR'; end if;
+
+  -- The service role can no longer write the log directly, bypassing the lock.
+  begin
+    insert into public.consent_events (psicologo_id, numero_remitente, evento, policy_version, wamid, origen)
+    values ('00000000-0000-0000-0000-0000000000a1', '+1212', 'granted', 'test-v2', 'w', 'whatsapp_acepto');
+    raise exception 'service role inserted into consent_events directly';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- ELIMINAR needs the current rate-limit window.
+  begin
+    perform public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+1010', 'w', null);
+    raise exception 'ELIMINAR ran without the current rate-limit window';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+
+reset role;
+
+-- 009: ELIMINAR keeps exactly the counter of the window it is given.
+insert into public.sender_rate_buckets (psicologo_id, numero_remitente, window_started_at, message_count)
+values ('00000000-0000-0000-0000-0000000000a1', '+1313', '2026-01-01 10:00+00', 4),
+       ('00000000-0000-0000-0000-0000000000a1', '+1313', '2026-01-01 09:00+00', 2);
+
+do $$
+begin
+  perform public.erase_sender_data('00000000-0000-0000-0000-0000000000a1', '+1313', 'w-eliminar-1313', '2026-01-01 10:00+00');
+  if (select string_agg(to_char(window_started_at at time zone 'UTC', 'HH24:MI'), ',')
+      from public.sender_rate_buckets where numero_remitente = '+1313') is distinct from '10:00'
+  then
+    raise exception 'ELIMINAR did not keep exactly the current window counter';
+  end if;
+end $$;
+
+-- 009: no client role reaches the grant function or the log sequence, and a published
+-- policy must name the three command words.
+do $$
+begin
+  if has_function_privilege('anon', 'public.record_sender_consent(uuid, text, text, text)', 'execute')
+    or has_function_privilege('authenticated', 'public.record_sender_consent(uuid, text, text, text)', 'execute')
+    or has_sequence_privilege('anon', 'public.consent_events_id_seq', 'usage')
+    or has_sequence_privilege('anon', 'public.consent_events_id_seq', 'update')
+    or has_sequence_privilege('authenticated', 'public.consent_events_id_seq', 'usage')
+    or has_sequence_privilege('authenticated', 'public.consent_events_id_seq', 'update')
+  then
+    raise exception 'a client role can reach the consent grant or its sequence';
+  end if;
+  begin
+    insert into public.consent_policies (version, texto, politica_url, vigente_desde)
+    values ('sin-comandos', 'Responde ACEPTO.', 'https://example.test/x', now());
+    raise exception 'policy published without BAJA and ELIMINAR';
+  exception when check_violation then null;
+  end;
+  -- A draft is not checked.
+  insert into public.consent_policies (version, texto) values ('borrador-libre', 'Sin comandos todavía.');
 end $$;
 
 rollback;

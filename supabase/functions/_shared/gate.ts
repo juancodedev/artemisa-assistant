@@ -260,8 +260,18 @@ export async function evaluateGate(
     return { outcome: 'rights', response };
   }
   if (command === ERASE_TOKEN) {
-    const erased = await dependencies.eraseSenderData(psicologo.id, senderKey, wamid);
-    return { outcome: 'rights', response: erased === null ? RIGHTS_FAILED_NOTICE : ERASED_NOTICE };
+    // true or false only says whether a consent was also withdrawn; the reply is the
+    // same, because the data was erased either way. null means nothing was erased.
+    const consentWithdrawn = await dependencies.eraseSenderData(
+      psicologo.id,
+      senderKey,
+      wamid,
+      rateLimitWindowStart()
+    );
+    return {
+      outcome: 'rights',
+      response: consentWithdrawn === null ? RIGHTS_FAILED_NOTICE : ERASED_NOTICE,
+    };
   }
 
   const consentState = await dependencies.getSenderConsentState(psicologo.id, senderKey);
@@ -320,25 +330,31 @@ export async function evaluateGate(
   //    gets the full text instead. No Claude call and no conversation row.
   //
   //    The write result decides the reply: a failed write reports as `limited` with an
-  //    honest reason, never a confirmation that did not happen.
-  if (isOptInToken(cleanMessage) && consentState.promptShown) {
-    if (!(await dependencies.recordSenderConsent(psicologo.id, senderKey, policy.version, wamid))) {
+  //    honest reason, never a confirmation that did not happen. A refusal means the
+  //    shown text was erased (an ELIMINAR landed first), so the full text is shown again.
+  let promptShown = consentState.promptShown;
+  if (isOptInToken(cleanMessage) && promptShown) {
+    const recorded = await dependencies.recordSenderConsent(psicologo.id, senderKey, policy.version, wamid);
+    if (recorded === null) {
       return {
         outcome: 'limited',
         response: `${OPT_IN_FAILED_NOTICE}\n\n${consentReminder(policy)}`,
       };
     }
-    return {
-      outcome: 'optin_confirmed',
-      response: `${OPT_IN_CONFIRMED_NOTICE}\n\n${greetingResponse(psicologo).contenido}`,
-    };
+    if (recorded) {
+      return {
+        outcome: 'optin_confirmed',
+        response: `${OPT_IN_CONFIRMED_NOTICE}\n\n${greetingResponse(psicologo).contenido}`,
+      };
+    }
+    promptShown = false;
   }
 
   // 5. Unconsented: the deterministic answer plus the consent request. The full text
   //    the first time for this policy, a short reminder after that. No Claude, no
   //    history, no conversation row. A failed prompt record only means the full text
   //    is shown again next time, so it never changes the reply.
-  if (consentState.promptShown) {
+  if (promptShown) {
     return { outcome: 'limited', response: `${answer}\n\n${consentReminder(policy)}` };
   }
   await dependencies.recordConsentPromptShown(psicologo.id, senderKey, policy.version, wamid);
