@@ -88,12 +88,13 @@ export function isCrisisSignal(message: string): boolean {
 // reaches Claude and storage, and a message it misses still goes through as written.
 //
 // "panico" alone is not listed: "me da pánico hablar por teléfono" is an administrative
-// question. Only the clinical phrases that contain it are.
+// question. Only the phrases that describe panic as something the sender has are.
 const CLINICAL_KEYWORDS: readonly string[] = [
   // Symptoms and states.
   'me duele', 'me siento mal', 'sintoma', 'ansiedad', 'depresion', 'deprimid',
   'angustia', 'lloro', 'no puedo mas', 'desesperad', 'no puedo dormir', 'insomnio',
-  'ataque de panico', 'ataques de panico', 'crisis de panico',
+  'ataque de panico', 'ataques de panico', 'crisis de panico', 'trastorno de panico',
+  'siento panico', 'tengo panico',
   // Treatment.
   'medicamento', 'medicacion', 'pastilla', 'receta', 'psiquiatra', 'diagnostico',
   'antidepresiv', 'ansiolitic',

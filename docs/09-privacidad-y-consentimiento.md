@@ -63,7 +63,7 @@ Las dos palabras se aceptan sin importar mayúsculas ni tildes, pero solas: "qui
 
 ## Retención
 
-`purge_expired_personal_data(interval '90 days')` borra:
+`purge_expired_personal_data()` borra, con su plazo por defecto de 90 días:
 
 - conversaciones sin actividad en ese plazo;
 - avisos de consentimiento mostrados hace más de ese plazo;
@@ -71,6 +71,8 @@ Las dos palabras se aceptan sin importar mayúsculas ni tildes, pero solas: "qui
 - contadores de mensajes de más de un día.
 
 Nunca toca `consent_events` y rechaza plazos menores a un día.
+
+El plazo está escrito en dos lugares que deben coincidir: el valor por defecto de la función (migración 008) y el texto de la política. La tarea programada llama a la función sin argumento. Si cambias el plazo, cambia los dos y publica una versión nueva de la política.
 
 La migración no programa el borrado. La primera ejecución borra de una vez todas las conversaciones que ya superan los 90 días, y no se puede deshacer. Antes de programarlo, revisa cuántas se borrarían y ejecuta a mano `supabase/scripts/schedule_retention_purge.sql`, que activa `pg_cron` y agenda la tarea todos los días a las 07:00 UTC.
 

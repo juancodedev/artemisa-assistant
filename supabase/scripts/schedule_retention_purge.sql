@@ -1,8 +1,12 @@
 -- Schedules the daily retention purge from migration 008. NOT a migration.
 --
+-- The retention is the default of purge_expired_personal_data (migration 008), 90 days,
+-- which is what the consent text promises. The job calls it without an argument, so
+-- the retention is set in one place.
+--
 -- Run it by hand, once, after confirming that deleting conversations without
--- activity for 90 days is intended: the first run deletes every conversation that is
--- already older than that, and it cannot be undone. Preview first:
+-- activity for that long is intended: the first run deletes every conversation that is
+-- already older, and it cannot be undone. Preview first, with the same 90 days:
 --
 --   select count(*) from public.conversaciones
 --   where coalesce(ultima_actividad, updated_at, created_at) < now() - interval '90 days';
@@ -16,7 +20,7 @@ create extension if not exists pg_cron with schema pg_catalog;
 select cron.schedule(
   'artemisa-retention-purge',
   '0 7 * * *',
-  $$select * from public.purge_expired_personal_data(interval '90 days')$$
+  $$select * from public.purge_expired_personal_data()$$
 );
 
 -- To stop it:

@@ -62,6 +62,10 @@ export const OPT_IN_TOKENS: readonly string[] = ['ACEPTO'];
 export const REVOKE_TOKEN = 'BAJA';
 export const ERASE_TOKEN = 'ELIMINAR';
 
+// The opt-in word as the replies spell it. The replies are built from these constants so
+// a renamed command cannot leave a reply naming a word the gate no longer accepts.
+const OPT_IN_WORD = OPT_IN_TOKENS[0];
+
 // ---------------------------------------------------------------------------
 // Responses
 //
@@ -80,7 +84,7 @@ export const RATE_LIMIT_RESPONSE =
   'Recibí demasiados mensajes en la última hora. Por favor, intenta de nuevo más tarde. Si necesitas hablar con tu psicólogo/a, comunícate directamente.';
 
 export const OPT_IN_CONFIRMED_NOTICE =
-  'Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee. Escribe BAJA para retirar tu autorización o ELIMINAR para borrar tu historial.';
+  `Listo, registré tu autorización. Ya puedo responder consultas abiertas y recordar esta conversación. Recuerda que este canal es automático y nadie lo lee. Escribe ${REVOKE_TOKEN} para retirar tu autorización o ${ERASE_TOKEN} para borrar tu historial.`;
 
 // Served instead of the confirmation when the consent write failed, so the sender is
 // never told a consent that was not stored and cannot tell that apart from being ignored.
@@ -93,10 +97,10 @@ export const CONSENT_CHECK_FAILED_NOTICE =
   'No pude verificar tu autorización en este momento, así que por ahora solo puedo responder consultas sobre precios, horarios, ubicación y cómo agendar una cita. Por favor, intenta de nuevo más tarde.';
 
 export const REVOKED_NOTICE =
-  'Listo, retiré tu autorización. Ya no guardaré esta conversación ni responderé consultas abiertas. Si quieres borrar también tu historial, escribe ELIMINAR.';
+  `Listo, retiré tu autorización. Ya no guardaré esta conversación ni responderé consultas abiertas. Si quieres borrar también tu historial, escribe ${ERASE_TOKEN}.`;
 
 export const NOTHING_TO_REVOKE_NOTICE =
-  'No tenías una autorización activa, así que no hay nada que retirar. Si quieres borrar los datos asociados a tu número, escribe ELIMINAR.';
+  `No tenías una autorización activa, así que no hay nada que retirar. Si quieres borrar los datos asociados a tu número, escribe ${ERASE_TOKEN}.`;
 
 export const ERASED_NOTICE =
   'Listo, borré tu historial y los datos asociados a tu número, y retiré tu autorización si la tenías. Solo conservo la constancia de tus autorizaciones, como respaldo.';
@@ -212,7 +216,7 @@ export function renderConsentRequest(policy: ConsentPolicy, psicologo: Psicologo
 
 /** The short reminder served once the full consent text has already been shown. */
 export function consentReminder(policy: ConsentPolicy): string {
-  return `Para que pueda responder consultas abiertas, responde ACEPTO. Antes, revisa la política de privacidad: ${policy.url}`;
+  return `Para que pueda responder consultas abiertas, responde ${OPT_IN_WORD}. Antes, revisa la política de privacidad: ${policy.url}`;
 }
 
 /** The deterministic answer, or the greeting, when nothing deterministic matched. */

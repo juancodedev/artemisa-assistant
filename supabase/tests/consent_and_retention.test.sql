@@ -416,6 +416,12 @@ begin
   set texto = 'Responde ACEPTO. Escribe BAJA o ELIMINAR.',
       politica_url = 'https://example.test/libre', vigente_desde = now() - interval '1 hour'
   where version = 'borrador-libre';
+  if not exists (
+    select 1 from public.consent_policies
+    where version = 'borrador-libre' and vigente_desde is not null and politica_url = 'https://example.test/libre'
+  ) then
+    raise exception 'the documented publish update did not publish the draft';
+  end if;
 end $$;
 
 rollback;

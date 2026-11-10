@@ -50,6 +50,9 @@ import {
   RATE_LIMIT_RESPONSE,
   consentReminder,
   evaluateGate,
+  ERASE_TOKEN,
+  OPT_IN_TOKENS,
+  REVOKE_TOKEN,
   isOptInToken,
   rateLimitWindowStart,
   renderConsentRequest,
@@ -1089,6 +1092,9 @@ Deno.test('detects clinical messages without flagging administrative ones', () =
     'tengo ataques de pánico',
     'me dio un ataque de panico',
     'tuve una crisis de pánico',
+    'siento pánico todos los días',
+    'tengo panico cuando salgo',
+    'me diagnosticaron trastorno de pánico',
     // Keywords that already matched keep matching, with or without accents.
     'Tengo ANSIEDAD',
     'necesito una receta',
@@ -1121,9 +1127,12 @@ Deno.test('classifies Claude\'s clinical referral from the referral text itself'
     setAnthropicClientForTests({
       messages: { create: async () => ({ content: [{ type: 'text', text: reply }] }) },
     } as unknown as Anthropic);
-    const result = await generateResponse('¿Cómo es la atención?', profile);
-    setAnthropicClientForTests(null);
-    assert.equal(result.tipo, tipo, reply);
+    try {
+      const result = await generateResponse('¿Cómo es la atención?', profile);
+      assert.equal(result.tipo, tipo, reply);
+    } finally {
+      setAnthropicClientForTests(null);
+    }
   }
 });
 
@@ -1827,6 +1836,19 @@ Deno.test('asks for no consent while no policy is published', async () => {
     assert.ok(decision.outcome === 'limited' && !decision.response.includes('ACEPTO'), text);
   }
   assert.equal(writes, 0);
+});
+
+Deno.test('names in every reply the exact command words the gate accepts', () => {
+  for (const [text, words] of [
+    [OPT_IN_CONFIRMED_NOTICE, [REVOKE_TOKEN, ERASE_TOKEN]],
+    [REVOKED_NOTICE, [ERASE_TOKEN]],
+    [NOTHING_TO_REVOKE_NOTICE, [ERASE_TOKEN]],
+    [consentReminder(testPolicy), [OPT_IN_TOKENS[0]]],
+  ] as const) {
+    for (const word of words) assert.ok(text.includes(word), `${word} missing from: ${text}`);
+  }
+  // And each named word is one the gate acts on.
+  assert.ok(isOptInToken(OPT_IN_TOKENS[0]));
 });
 
 Deno.test('writes the consent replies in neutral Spanish', () => {
