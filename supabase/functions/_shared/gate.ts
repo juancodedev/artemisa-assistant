@@ -179,7 +179,9 @@ function normalizeForTokenMatch(value: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    // Trailing or leading punctuation ("BAJA.", "¡acepto!") does not change the word.
+    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
 }
 
 const NORMALIZED_OPT_IN_TOKENS = new Set(OPT_IN_TOKENS.map(normalizeForTokenMatch));

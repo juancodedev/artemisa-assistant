@@ -936,6 +936,9 @@ Deno.test('detects real first-person crisis phrasing without flagging everyday s
     'me voy a tirar al metro',
     'me voy a tomar todas las pastillas',
     'hoy me mato.',
+    'me quiero quitar la vida',
+    'me quiero hacer daño',
+    'anoche me corté las venas',
     'esta noche me mato con las pastillas',
     'me mato en el metro',
     'esta noche me mato',
@@ -1831,7 +1834,7 @@ Deno.test('keeps failing open for an unconsented sender when the counter is unav
 });
 
 Deno.test('matches opt-in tokens across case, accents, and repeated whitespace', () => {
-  for (const token of ['ACEPTO', 'acepto', 'Acepto', 'ACEPTÓ', '  acepto  ']) {
+  for (const token of ['ACEPTO', 'acepto', 'Acepto', 'ACEPTÓ', '  acepto  ', 'acepto.', '¡Acepto!']) {
     assert.equal(isOptInToken(token), true, `expected ${JSON.stringify(token)} to opt in`);
   }
   // Only the exact word counts: short replies that appear incidentally, the old tokens,
@@ -1934,7 +1937,7 @@ Deno.test('BAJA withdraws consent before the rate limit and stores nothing', asy
       }) as unknown as WebhookDependencies['revokeSenderConsent'],
     });
 
-    const response = await handleWebhook(await buildWebhookRequest('  Baja ', 'wamid-baja'), dependencies);
+    const response = await handleWebhook(await buildWebhookRequest('  Baja. ', 'wamid-baja'), dependencies);
 
     assert.equal(response.status, 200);
     assert.deepEqual(calls, [[profile.id, '+111', 'wamid-baja']]);
@@ -1964,7 +1967,7 @@ Deno.test('ELIMINAR erases the sender data and reports failure honestly', async 
       }) as unknown as WebhookDependencies['eraseSenderData'],
     });
 
-    const response = await handleWebhook(await buildWebhookRequest('eliminar', 'wamid-eliminar'), dependencies);
+    const response = await handleWebhook(await buildWebhookRequest('¡ELIMINAR!', 'wamid-eliminar'), dependencies);
 
     assert.equal(response.status, 200);
     assert.deepEqual(calls, [[profile.id, '+111', 'wamid-eliminar']]);
