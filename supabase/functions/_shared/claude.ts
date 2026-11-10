@@ -3,7 +3,7 @@
 
 import { Anthropic } from '@anthropic-ai/sdk';
 import { MensajeHistoria, Psicologo, RespuestaBot, TipoConsulta } from './types.ts';
-import { isSchedulingRequest } from './validation.ts';
+import { isSchedulingRequest, redactSensitiveText } from './validation.ts';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 400;
@@ -105,9 +105,11 @@ function toClaudeMessages(
   currentMessage: string
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   return [
+    // Redacted here as well as on write: history stored before redaction existed may
+    // still hold raw clinical text, and this is the only path to Claude.
     ...history.map((item) => ({
       role: item.role,
-      content: item.content,
+      content: item.role === 'user' ? redactSensitiveText(item.content) : item.content,
     })),
     { role: 'user' as const, content: currentMessage },
   ];

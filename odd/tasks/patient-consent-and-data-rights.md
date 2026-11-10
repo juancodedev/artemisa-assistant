@@ -19,7 +19,7 @@ Test runner: `deno test` over `supabase/functions/_shared/phase1.test.ts`; SQL v
 | --- | --- | --- | --- | --- |
 | T1 Crisis detection and unconditional reply | S1 | inline | done: RED 3 failed, GREEN 42 passed | see Log L5 |
 | T2 Remove the promise, neutral Spanish | S2, S6 | inline | done: RED 3 failed, GREEN 43 passed | see Log L6 |
-| T3 Clinical minimization | S5 | inline | pending | |
+| T3 Clinical minimization | S5 | inline | done: RED 2 failed, GREEN 46 passed | see Log L8 |
 | T4 Versioned consent | S3, S6 | inline | pending | |
 | T5 BAJA, ELIMINAR, retention purge | S4 | inline | pending | |
 
@@ -34,3 +34,4 @@ Route evidence: no Writer trigger; units depend on each other and share `gate.ts
 - L5 T1: real phrasings ("me quiero matar", "me voy a suicidar") were missed; patterns now cover them. The webhook sends the crisis line before the profile lookup, the rate limit, and consent, and through claim, profile, and conversation outages. The redacted exchange is stored only for a consented sender. RED 3 failed; GREEN 42 passed; `deno check` clean.
 - L6 T2: the four replies that promised a follow-up ("te contactará a la brevedad", "revisará tu consulta", "te responderá") now point to a channel that reaches a person. One `CLINICAL_REFERRAL_RESPONSE` serves both the router and Claude's prompt. Patient-facing strings in `supabase/functions/` are neutral Spanish; the consent strings are rewritten in T4. `src/` is the undeployed legacy tree and stays unchanged. RED 3 failed; GREEN 43 passed; Node tests 13 passed.
 - L7 Review of `cd7e437` (lenses risk, resilience, reliability): approved and acknowledged, with non-blocking advisories. Acted on two: "me mato" and "terminar/acabar con todo" now match only when they end the thought, so "me mato estudiando" and "terminar con todo el papeleo" reach the ordinary pipeline; a failed crisis send is pinned to request redelivery. Accepted trade-offs: a crisis message skips the rate limit, and a redelivery after an uncertain claim repeats the helpline. RED 1 failed; GREEN 44 passed.
+- L8 T3: patient text is stored as a marker when routing classified it as crisis or clinical, or when its wording is clinical inside another route (for example a scheduling request). History sent to Claude is redacted again at the only Claude boundary, which covers rows stored before this change. The clinical keyword 'ataque de pánico' missed the plural, so the keyword is now 'pánico'. Limit: detection is the keyword heuristic, so a clinical message it misses is still stored and can reach Claude. RED 2 failed; GREEN 46 passed.

@@ -1188,6 +1188,71 @@ Deno.test('redacts raw crisis text while persisting the safety interaction', asy
   assert.equal(persistedMessages[0].content.includes(rawCrisisText), false);
   assert.equal(persistedMessages[1].content, CRISIS_RESPONSE);
 });
+Deno.test('stores clinical text only as a redacted marker', async () => {
+  Deno.env.set('META_APP_SECRET', 'test-app-secret');
+  const cases: Array<[string, string, string]> = [
+    // A clinical answer, from the router or from Claude's refusal.
+    ['tomo sertralina y tengo ansiedad', 'clinica', '[mensaje clínico omitido]'],
+    // Routed as scheduling, but the text itself is clinical.
+    ['quiero agendar porque tengo depresión', 'programacion', '[mensaje clínico omitido]'],
+    // Ordinary administrative text is kept as written.
+    ['¿Cuál es el horario?', 'administrativa', '¿Cuál es el horario?'],
+  ];
+
+  for (const [text, tipo, expected] of cases) {
+    let persisted: MensajeHistoria[] = [];
+    await handleWebhook(
+      await buildWebhookRequest(text, `wamid-redact-${tipo}`),
+      createWebhookDependencies({
+        processIncomingMessage: (async () => ({
+          success: true,
+          response: 'Respuesta',
+          tipo,
+          normalizedPatientNumber: '+111',
+        })) as unknown as WebhookDependencies['processIncomingMessage'],
+        appendMessagesToConversacion: (async (
+          _id: string,
+          _history: MensajeHistoria[],
+          newMessages: MensajeHistoria[]
+        ) => {
+          persisted = newMessages;
+          return true;
+        }) as unknown as WebhookDependencies['appendMessagesToConversacion'],
+      })
+    );
+    assert.equal(persisted[0]?.content, expected, text);
+  }
+});
+
+Deno.test('never sends stored clinical or crisis text to Claude', async () => {
+  let sentToClaude: Array<{ role: string; content: string }> = [];
+  setAnthropicClientForTests({
+    messages: {
+      create: async (params: { messages: Array<{ role: string; content: string }> }) => {
+        sentToClaude = params.messages;
+        return { content: [{ type: 'text', text: 'Respuesta' }] };
+      },
+    },
+  } as unknown as Anthropic);
+
+  // History written before redaction existed still holds the raw text.
+  await generateResponse('¿Atienden los sábados?', profile, [
+    { role: 'user', content: 'tengo ataques de pánico desde enero', timestamp: '2026-01-01T00:00:00Z' },
+    { role: 'assistant', content: 'Respuesta anterior', timestamp: '2026-01-01T00:00:01Z' },
+    { role: 'user', content: 'me quiero matar', timestamp: '2026-01-01T00:00:02Z' },
+    { role: 'user', content: '¿Dónde queda?', timestamp: '2026-01-01T00:00:03Z' },
+  ]);
+  setAnthropicClientForTests(null);
+
+  assert.deepEqual(sentToClaude.map((message) => message.content), [
+    '[mensaje clínico omitido]',
+    'Respuesta anterior',
+    '[mensaje de crisis omitido]',
+    '¿Dónde queda?',
+    '¿Atienden los sábados?',
+  ]);
+});
+
 Deno.test('rejects public send-message requests without the internal function secret', async () => {
   Deno.env.set('INTERNAL_FUNCTION_SECRET', 'internal-test-secret');
   const response = await handleSendMessage(

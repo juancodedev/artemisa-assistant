@@ -91,11 +91,25 @@ export function isClinicalQuestion(message: string): boolean {
     'medicación', 'medicacion', 'pastilla', 'pastillas', 'receta',
     'psiquiatra', 'diagnostico', 'diagnóstico', 'emergencia',
     'suicid', 'autolesion', 'autolesión', 'hacerme daño', 'morir',
-    'ataque de panico', 'ataque de pánico', 'crisis de angustia',
+    'panico', 'pánico', 'crisis de angustia',
     'angustia', 'lloro', 'no puedo mas', 'no puedo más', 'desesperad'
   ];
   const lowerMsg = message.toLowerCase();
   return clinicalKeywords.some(kw => lowerMsg.includes(kw));
+}
+
+export const CRISIS_TEXT_PLACEHOLDER = '[mensaje de crisis omitido]';
+export const CLINICAL_TEXT_PLACEHOLDER = '[mensaje clínico omitido]';
+
+/**
+ * Replace a patient message that reveals health information with a fixed marker, so it
+ * is neither stored nor sent to Claude. Detection is the same keyword heuristic the
+ * router uses: it lowers exposure, but a message it misses still goes through as is.
+ */
+export function redactSensitiveText(text: string): string {
+  if (isCrisisSignal(text)) return CRISIS_TEXT_PLACEHOLDER;
+  if (isClinicalQuestion(text)) return CLINICAL_TEXT_PLACEHOLDER;
+  return text;
 }
 
 /**

@@ -24,14 +24,32 @@ import {
 import { processIncomingMessage } from '../_shared/bot.ts';
 import { evaluateGate } from '../_shared/gate.ts';
 import { CRISIS_RESPONSE } from '../_shared/router.ts';
-import { isCrisisSignal, normalizePhoneNumber, sanitizeInput } from '../_shared/validation.ts';
+import {
+  CLINICAL_TEXT_PLACEHOLDER,
+  CRISIS_TEXT_PLACEHOLDER,
+  isCrisisSignal,
+  normalizePhoneNumber,
+  redactSensitiveText,
+  sanitizeInput,
+} from '../_shared/validation.ts';
+import type { TipoConsulta } from '../_shared/types.ts';
 import { aggregateBatchOutcomes, type BatchMessageOutcome } from '../_shared/batch.ts';
 
 const UNAVAILABLE_RESPONSE =
   'En este momento el servicio no está disponible. Por favor, comunícate directamente con tu profesional.';
 const MEDIA_RESPONSE =
   'Por el momento solo puedo procesar mensajes de texto. Para enviar audios o documentos, comunícate directamente con tu psicólogo/a.';
-const CRISIS_USER_MESSAGE_PLACEHOLDER = '[mensaje de crisis omitido]';
+
+/**
+ * The patient text that may be stored. The routing decision redacts what it already
+ * classified, including a clinical refusal Claude produced, and the text check catches
+ * clinical wording inside a message routed elsewhere, such as a scheduling request.
+ */
+function storedPatientText(text: string, tipo: TipoConsulta): string {
+  if (tipo === 'crisis') return CRISIS_TEXT_PLACEHOLDER;
+  if (tipo === 'clinica') return CLINICAL_TEXT_PLACEHOLDER;
+  return redactSensitiveText(text);
+}
 
 export interface WebhookDependencies {
   claimIncomingMessage: typeof claimIncomingMessage;
@@ -131,7 +149,7 @@ async function persistCrisisExchange(
 
     const timestamp = new Date().toISOString();
     return await dependencies.appendMessagesToConversacion(conversation.id, conversation.historial, [
-      { role: 'user', content: CRISIS_USER_MESSAGE_PLACEHOLDER, timestamp },
+      { role: 'user', content: CRISIS_TEXT_PLACEHOLDER, timestamp },
       { role: 'assistant', content: CRISIS_RESPONSE, timestamp },
     ]);
   } catch {
@@ -294,7 +312,7 @@ async function processMessage(
       [
         {
           role: 'user',
-          content: botResult.tipo === 'crisis' ? CRISIS_USER_MESSAGE_PLACEHOLDER : message.text,
+          content: storedPatientText(message.text, botResult.tipo),
           timestamp: new Date().toISOString(),
         },
         {
